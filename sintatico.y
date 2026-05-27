@@ -34,18 +34,24 @@ string gentempcode(string tipo);
 void declaraTemp();
 
 string maior_tipo(string t1, string t2) {
+	if (t1 == "bool" || t2 == "bool") return "erro";
     if (t1 == "float" || t2 == "float") return "float";
     if (t1 == "int"   || t2 == "int")   return "int";
     return "char";
 }
 
-string converter(string origem, string destino, string label, string &traducao) {
+string converter(string origem, string destino, string label, string &novas_instrucoes) {
     if (origem == destino) return label;
+    
+    // garante nao converter bools
+    if (origem == "bool" || destino == "bool") {
+        return "ERRO_TIPO";
+    }
+    
     string temp = gentempcode(destino);
-    traducao += "\t" + temp + " = (" + destino + ") " + label + ";\n";
+    novas_instrucoes += "\t" + temp + " = (" + destino + ") " + label + ";\n";
     return temp;
 }
-
 %}
 
 %token TK_NUM TK_FLOAT TK_ID TK_CHAR 
@@ -64,6 +70,7 @@ string converter(string origem, string destino, string label, string &traducao) 
 %left '+' '-'
 %left '*' '/'
 %right NOT
+%right PREC_CAST
 
 %%
 
@@ -104,51 +111,69 @@ COMANDOS 	: COMANDO COMANDOS
 			}
 			;
 
-COMANDO 	: DECL ';'
-			{
-				$$.traducao = $1.traducao;
-			}
-			| TK_ID '=' E ';'
-			{
-				if(!tabela_simbolos.count($1.label))
-				{
-					tabela_simbolos[$1.label].tipo = $3.tipo;
-					tabela_simbolos[$1.label].temp = "";
-				}
-				else if(tabela_simbolos[$1.label].tipo != $3.tipo)
-				{
-					yyerror("Tipos incompativeis na atribuicao");
-				}
+COMANDO     : DECL ';'
+            {
+                $$.traducao = $1.traducao;
+            }
+            | TIPO TK_ID '=' E ';'
+            {
+                if(tabela_simbolos.count($2.label)) {
+                    yyerror("Variavel ja declarada");
+                }
 
-				if(tabela_simbolos[$1.label].temp == "")
-					tabela_simbolos[$1.label].temp = gentempcode(tabela_simbolos[$1.label].tipo);
+                string tipo_id = $1.tipo; 
+                tabela_simbolos[$2.label].tipo = tipo_id;
+                tabela_simbolos[$2.label].temp = gentempcode(tipo_id);
 
-				$$.traducao =
-					$3.traducao +
-					"\t" + tabela_simbolos[$1.label].temp +
-					" = " + $3.label + ";\n";
-			}
-			| TK_ID '=' E
-			{
-				if(!tabela_simbolos.count($1.label))
-				{
-					tabela_simbolos[$1.label].tipo = $3.tipo;
-					tabela_simbolos[$1.label].temp = "";
-				}
-				else if(tabela_simbolos[$1.label].tipo != $3.tipo)
-				{
-					yyerror("Tipos incompativeis na atribuicao");
-				}
+                string conversoes = "";
+                string label_final = converter($4.tipo, tipo_id, $4.label, conversoes);
 
-				if(tabela_simbolos[$1.label].temp == "")
-					tabela_simbolos[$1.label].temp = gentempcode(tabela_simbolos[$1.label].tipo);
+                if (label_final == "ERRO_TIPO") {
+                    yyerror("Tipos incompativeis na atribuicao: nao e possivel converter para bool.");
+                }
 
-				$$.traducao =
-					$3.traducao +
-					"\t" + tabela_simbolos[$1.label].temp +
-					" = " + $3.label + ";\n";
-			}
-			;
+                $$.traducao = $4.traducao + conversoes +
+                              "\t" + tabela_simbolos[$2.label].temp +
+                              " = " + label_final + ";\n";
+            }
+            | TK_ID '=' E ';'
+            {
+                if(!tabela_simbolos.count($1.label))
+                {
+                    yyerror("Variavel nao declarada");
+                }
+                
+                string tipo_id = tabela_simbolos[$1.label].tipo;
+                string conversoes = "";
+                string label_final = converter($3.tipo, tipo_id, $3.label, conversoes);
+
+                if (label_final == "ERRO_TIPO") {
+                    yyerror("Tipos incompativeis na atribuicao: nao e possivel converter para bool.");
+                }
+
+                if(tabela_simbolos[$1.label].temp == "")
+                    tabela_simbolos[$1.label].temp = gentempcode(tipo_id);
+
+                $$.traducao = $3.traducao + conversoes +
+                              "\t" + tabela_simbolos[$1.label].temp +
+                              " = " + label_final + ";\n";
+            }
+            | TK_ID '=' E
+            {
+                if(!tabela_simbolos.count($1.label))
+                {
+                    tabela_simbolos[$1.label].tipo = $3.tipo;
+                    tabela_simbolos[$1.label].temp = "";
+                }
+
+                if(tabela_simbolos[$1.label].temp == "")
+                    tabela_simbolos[$1.label].temp = gentempcode(tabela_simbolos[$1.label].tipo);
+
+                $$.traducao = $3.traducao +
+                              "\t" + tabela_simbolos[$1.label].temp +
+                              " = " + $3.label + ";\n";
+            }
+            ;
 
 DECL		: TIPO TK_ID
 			{
@@ -176,118 +201,211 @@ TIPO		: INT
 			}
 			| BOOL_TYPE
 			{
-				$$.tipo = "int";
+				$$.tipo = "bool";
 			}
 			;
 
 E 			: E '+' E
 			{
 				string t = maior_tipo($1.tipo, $3.tipo);
-				string trad1 = $1.traducao, trad2 = $3.traducao;
-				string l1 = converter($1.tipo, t, $1.label, trad1);
-				string l2 = converter($3.tipo, t, $3.label, trad2);
-				$$.tipo = t;
-				$$.label = gentempcode(t);
-				$$.traducao = trad1 + trad2 +
-					"\t" + $$.label + " = " + l1 + " + " + l2 + ";\n";
-			}
+                if (t == "erro") {
+                    yyerror("Operacao invalida envolvendo tipos booleanos.");
+                }
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+                $$.tipo = t;
+                $$.label = gentempcode(t);
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " + " + l2 + ";\n";
+            }
+			
 			| E '-' E
 			{
 				string t = maior_tipo($1.tipo, $3.tipo);
-				string trad1 = $1.traducao, trad2 = $3.traducao;
-				string l1 = converter($1.tipo, t, $1.label, trad1);
-				string l2 = converter($3.tipo, t, $3.label, trad2);
-				$$.tipo = t;
-				$$.label = gentempcode(t);
-				$$.traducao = trad1 + trad2 +
-					"\t" + $$.label + " = " + l1 + " - " + l2 + ";\n";
+                if (t == "erro") {
+                    yyerror("Operacao invalida envolvendo tipos booleanos.");
+                }
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+                $$.tipo = t;
+                $$.label = gentempcode(t);
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " - " + l2 + ";\n";
 			}
 			| E '*' E
 			{
 				string t = maior_tipo($1.tipo, $3.tipo);
-				string trad1 = $1.traducao, trad2 = $3.traducao;
-				string l1 = converter($1.tipo, t, $1.label, trad1);
-				string l2 = converter($3.tipo, t, $3.label, trad2);
-				$$.tipo = t;
-				$$.label = gentempcode(t);
-				$$.traducao = trad1 + trad2 +
-					"\t" + $$.label + " = " + l1 + " * " + l2 + ";\n";
+                if (t == "erro") {
+                    yyerror("Operacao invalida envolvendo tipos booleanos.");
+                }
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+                $$.tipo = t;
+                $$.label = gentempcode(t);
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " * " + l2 + ";\n";
 			}
 			| E '/' E
 			{
 				string t = maior_tipo($1.tipo, $3.tipo);
-				string trad1 = $1.traducao, trad2 = $3.traducao;
-				string l1 = converter($1.tipo, t, $1.label, trad1);
-				string l2 = converter($3.tipo, t, $3.label, trad2);
-				$$.tipo = t;
-				$$.label = gentempcode(t);
-				$$.traducao = trad1 + trad2 +
-					"\t" + $$.label + " = " + l1 + " / " + l2 + ";\n";
+                if (t == "erro") {
+                    yyerror("Operacao invalida envolvendo tipos booleanos.");
+                }
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+                $$.tipo = t;
+                $$.label = gentempcode(t);
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " / " + l2 + ";\n";
 			}
 			| E '<' E
 			{
-				$$.tipo = "int";
-				$$.label = gentempcode("int");
-				$$.traducao = $1.traducao + $3.traducao + "\t" + $$.label +
-					" = " + $1.label + " < " + $3.label + ";\n";
-			}
-			| E '>' E
-			{
-				$$.tipo = "int";
-				$$.label = gentempcode("int");
-				$$.traducao = $1.traducao + $3.traducao + "\t" + $$.label +
-					" = " + $1.label + " > " + $3.label + ";\n";
+                string t = maior_tipo($1.tipo, $3.tipo);
+                if (t == "erro") {
+                    yyerror("Operacao relacional invalida envolvendo tipos booleanos.");
+                }
+
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+
+                $$.label = gentempcode("bool"); 
+
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " < " + l2 + ";\n";
+				$$.tipo = "bool";
+            }
+            | E '>' E
+            {
+                string t = maior_tipo($1.tipo, $3.tipo);
+                if (t == "erro") {
+                    yyerror("Operacao relacional invalida envolvendo tipos booleanos.");
+                }
+
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+
+                $$.label = gentempcode("bool"); 
+
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " > " + l2 + ";\n";
+                $$.tipo = "bool";
+
 			}
 			| E LE E
 			{
-				$$.tipo = "int";
-				$$.label = gentempcode("int");
-				$$.traducao = $1.traducao + $3.traducao + "\t" + $$.label +
-					" = " + $1.label + " <= " + $3.label + ";\n";
-			}
+                string t = maior_tipo($1.tipo, $3.tipo);
+                if (t == "erro") {
+                    yyerror("Operacao relacional invalida envolvendo tipos booleanos.");
+                }
+
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+
+                $$.label = gentempcode("bool"); 
+
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " <= " + l2 + ";\n";
+                $$.tipo = "bool";
+				
+            }
 			| E GE E
 			{
-				$$.tipo = "int";
-				$$.label = gentempcode("int");
-				$$.traducao = $1.traducao + $3.traducao + "\t" + $$.label +
-					" = " + $1.label + " >= " + $3.label + ";\n";
-			}
+                string t = maior_tipo($1.tipo, $3.tipo);
+                if (t == "erro") {
+                    yyerror("Operacao relacional invalida envolvendo tipos booleanos.");
+                }
+
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+
+                $$.label = gentempcode("bool"); 
+
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " >= " + l2 + ";\n";
+                $$.tipo = "bool";
+
+            }
 			| E EQ E
 			{
-				$$.tipo = "int";
-				$$.label = gentempcode("int");
-				$$.traducao = $1.traducao + $3.traducao + "\t" + $$.label +
-					" = " + $1.label + " == " + $3.label + ";\n";
-			}
+                string t = maior_tipo($1.tipo, $3.tipo);
+                if (t == "erro") {
+                    yyerror("Operacao relacional invalida envolvendo tipos booleanos.");
+                }
+
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+
+                $$.label = gentempcode("bool"); 
+
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " == " + l2 + ";\n";
+                $$.tipo = "bool";
+				
+            }
 			| E NE E
 			{
-				$$.tipo = "int";
-				$$.label = gentempcode("int");
-				$$.traducao = $1.traducao + $3.traducao + "\t" + $$.label +
-					" = " + $1.label + " != " + $3.label + ";\n";
-			}
+                string t = maior_tipo($1.tipo, $3.tipo);
+                if (t == "erro") {
+                    yyerror("Operacao relacional invalida envolvendo tipos booleanos.");
+                }
+
+                string conversoes = "";
+                string l1 = converter($1.tipo, t, $1.label, conversoes);
+                string l2 = converter($3.tipo, t, $3.label, conversoes);
+
+                $$.label = gentempcode("bool"); 
+
+                $$.traducao = $1.traducao + $3.traducao + conversoes +
+                              "\t" + $$.label + " = " + l1 + " != " + l2 + ";\n";
+                $$.tipo = "bool";
+				
+            }
 			| E AND E
 			{
-				$$.tipo = "int";
-				$$.label = gentempcode("int");
-				$$.traducao = $1.traducao + $3.traducao + "\t" + $$.label +
-					" = " + $1.label + " && " + $3.label + ";\n";
-			}
-			| E OR E
-			{
-				$$.tipo = "int";
-				$$.label = gentempcode("int");
-				$$.traducao = $1.traducao + $3.traducao + "\t" + $$.label +
-					" = " + $1.label + " || " + $3.label + ";\n";
-			}
+                if ($1.tipo != "bool" || $3.tipo != "bool") {
+                    yyerror("Operadores logicos (&&, ||) exigem operandos do tipo bool.");
+                }
+
+                $$.tipo = "bool";
+                $$.label = gentempcode("int");
+                $$.traducao = $1.traducao + $3.traducao + 
+                              "\t" + $$.label + " = " + $1.label + " && " + $3.label + ";\n";
+            }
+            | E OR E
+            {
+                if ($1.tipo != "bool" || $3.tipo != "bool") {
+                    yyerror("Operadores logicos (&&, ||) exigem operandos do tipo bool.");
+                }
+
+                $$.tipo = "bool";
+                $$.label = gentempcode("int");
+                $$.traducao = $1.traducao + $3.traducao + 
+                              "\t" + $$.label + " = " + $1.label + " || " + $3.label + ";\n";
+            }
 			| NOT E
 			{
-				$$.tipo = "int";
-				$$.label = gentempcode("int");
-				$$.traducao = $2.traducao + "\t" + $$.label +
-					" = !" + $2.label + ";\n";
-			}
-			| '(' TIPO ')' E
+				cout << "DEBUG NOT: tipo do filho e " << $2.tipo << endl;
+                if ($2.tipo != "bool") {
+                    yyerror("O operador de negacao (!) exige um operando do tipo bool.");
+                }
+                if ($2.tipo != "bool") {
+                    yyerror("O operador de negacao (!) exige um operando do tipo bool.");
+                }
+                $$.tipo = "bool";
+                $$.label = gentempcode("int");
+                $$.traducao = $2.traducao + 
+                              "\t" + $$.label + " = !" + $2.label + ";\n";
+            }
+			| '(' TIPO ')' E %prec PREC_CAST
 			{
 				string temp_copia = gentempcode($4.tipo);
 				string temp_cast  = gentempcode($2.tipo);
@@ -317,7 +435,7 @@ E 			: E '+' E
 			}
 			| TK_BOOL
 			{
-				$$.tipo = "int";
+				$$.tipo = "bool";
 				$$.label = $1.label;
 				$$.traducao = "";
 			}
@@ -376,5 +494,6 @@ int main(int argc, char* argv[])
 
 void yyerror(string MSG)
 {
-	cerr << "Erro na linha " << linha << ": " << MSG << endl;
+    cerr << "Erro na linha " << linha << ": " << MSG << endl;
+    exit(1); // Faz encerrar sem printar
 }

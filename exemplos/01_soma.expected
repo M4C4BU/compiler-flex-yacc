@@ -1,4 +1,4 @@
-/*Compilador FOCA*/
+/*Compilador Carlos*/
 #include <stdio.h>
 int main(void) {
 	t1 = 1;

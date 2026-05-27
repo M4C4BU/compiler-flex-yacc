@@ -8,7 +8,6 @@ extern int linha;
 
 %option noyywrap
 
-ESPACO     [ \t]
 LETRA      [a-zA-Z_]
 DIGITO     [0-9]
 
@@ -18,9 +17,11 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 
 %%
 
-{ESPACO}+   { }
-"//".*      { }
-"/*"([^*]|\*+[^*/])*\*+"/"   { }
+[ \t]+      
+\n          { linha++;}
+
+"//".*
+"/*"([^*]|\*+[^*/])*\*+"/" 
 
 "int"       { return INT; }
 "float"     { return FLOAT_TYPE; }
@@ -59,14 +60,12 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 
 {FLOAT}     { yylval.label = yytext; return TK_FLOAT; }
 {NUM}       { yylval.label = yytext; return TK_NUM; }
-\'({LETRA}|{DIGITO})\' { yylval.label = yytext; return TK_CHAR; }
+\'[^\']\'   { yylval.label = yytext; return TK_CHAR; }
 "true"      { yylval.label = "1"; return TK_BOOL; }
 "false"     { yylval.label = "0"; return TK_BOOL; }
 
 {ID}        { yylval.label = yytext; return TK_ID; }
 
-\n          { linha++; }
-
-.           { printf("Erro na linha %d: %s\n", linha, yytext); }
+.           { printf("Erro léxico na linha %d: caractere invalido '%s'\n", linha, yytext); }
 
 %%
