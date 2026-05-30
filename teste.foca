@@ -1,0 +1,19 @@
+int x = 15;
+float y = 3.5;
+bool ativo = true;
+
+if (x >= 10 && ativo) {
+    float temp = x / 2;
+    y = y + temp;
+} else {
+    ativo = !ativo;
+}
+
+{
+    int x = 50;
+    float y = x * 1.5;
+    
+    if (y != 75.0) {
+        ativo = false;
+    }
+}

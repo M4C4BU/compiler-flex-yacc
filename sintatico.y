@@ -9,6 +9,7 @@
 using namespace std;
 
 int var_temp_qnt;
+int label_qnt =0;
 vector<pair<string, string>> temporarios;
 int linha = 1;
 string codigo_gerado;
@@ -27,13 +28,50 @@ struct Simbolo {
     string temp;
 };
 
-map<string,Simbolo> tabela_simbolos;
+vector<map<string, Simbolo>> pilha_tabelas(1);
 
 // Funções
 int yylex(void);
 void yyerror(string);
 string gentempcode(string tipo);
-void declaraTemp();
+string declaraTemp();
+
+// Funções auxiliares para buscar variáveis na pilha de escopos
+bool declarada_no_escopo_atual(string id) {
+    return pilha_tabelas.back().count(id) > 0;
+}
+
+bool declarada(string id) {
+    for (int i = pilha_tabelas.size() - 1; i >= 0; i--) {
+        if (pilha_tabelas[i].count(id) > 0) return true;
+    }
+    return false;
+}
+
+Simbolo obter_simbolo(string id) {
+    for (int i = pilha_tabelas.size() - 1; i >= 0; i--) {
+        if (pilha_tabelas[i].count(id) > 0) return pilha_tabelas[i][id];
+    }
+    return Simbolo{"erro", ""};
+}
+
+void inserir_simbolo(string id, string tipo, string temp) {
+    pilha_tabelas.back()[id] = Simbolo{tipo, temp};
+}
+
+void atualizar_temp_simbolo(string id, string temp) {
+    for (int i = pilha_tabelas.size() - 1; i >= 0; i--) {
+        if (pilha_tabelas[i].count(id) > 0) {
+            pilha_tabelas[i][id].temp = temp;
+            return;
+        }
+    }
+}
+
+string gen_label() {
+    label_qnt++;
+    return "L" + to_string(label_qnt);
+}
 
 string maior_tipo(string t1, string t2) {
     if (t1 == "bool" || t2 == "bool") return "erro";
@@ -91,7 +129,9 @@ string montar_programa(string traducao_interna) {
     string prog = "/*Compilador FOCA*/\n"
                   "#include <stdio.h>\n"
                   "int main(void) {\n";
-    declaraTemp();
+                  
+    prog += declaraTemp();
+    
     prog += "\n" + traducao_interna + "\treturn 0;\n}\n";
     return prog;
 }
@@ -122,6 +162,16 @@ S           : E        { codigo_gerado = montar_programa($1.traducao); }
             | COMANDOS { codigo_gerado = montar_programa($1.traducao); }
             ;
 
+BLOCO_INICIO : '{' { pilha_tabelas.push_back(map<string, Simbolo>()); } 
+             ;
+
+BLOCO_FIM    : '}' { pilha_tabelas.pop_back(); } 
+             ;
+
+BLOCO        : BLOCO_INICIO COMANDOS BLOCO_FIM  {$$.traducao = $2.traducao; }
+             | BLOCO_INICIO BLOCO_FIM {$$.traducao = ""; }
+             ;
+
 COMANDOS    : COMANDO COMANDOS
             {
                 $$.traducao = $1.traducao + $2.traducao;
@@ -133,15 +183,46 @@ COMANDOS    : COMANDO COMANDOS
             ;
 
 COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
+            | BLOCO { $$.traducao = $1.traducao; }
+            | IF '(' E ')' BLOCO
+            {
+                if ($3.tipo != "bool") {
+                    yyerror("A condicao do IF deve resultar em um booleano.");
+                }
+                
+                string label_fim = gen_label();
+                
+                $$.traducao = $3.traducao +
+                              "\tif(!" + $3.label + ") goto " + label_fim + ";\n" +
+                              $5.traducao +
+                              "\t" + label_fim + ":\n";
+            }
+            | IF '(' E ')' BLOCO ELSE BLOCO
+            {
+                if ($3.tipo != "bool") {
+                    yyerror("A condicao do IF deve resultar em um booleano.");
+                }
+                
+                string label_else = gen_label();
+                string label_fim = gen_label();
+                
+                $$.traducao = $3.traducao +
+                              "\tif(!" + $3.label + ") goto " + label_else + ";\n" +
+                              $5.traducao +
+                              "\tgoto " + label_fim + ";\n" +
+                              "\t" + label_else + ":\n" +
+                              $7.traducao +
+                              "\t" + label_fim + ":\n";
+            }
             | TIPO TK_ID '=' E ';'
             {
-                if(tabela_simbolos.count($2.label)) {
-                    yyerror("Variavel ja declarada");
+                if(declarada_no_escopo_atual($2.label)) {
+                    yyerror("Variavel ja declarada neste escopo");
                 }
 
                 string tipo_id = $1.tipo; 
-                tabela_simbolos[$2.label].tipo = tipo_id;
-                tabela_simbolos[$2.label].temp = gentempcode(tipo_id);
+                string temp_id = gentempcode(tipo_id);
+                inserir_simbolo($2.label, tipo_id, temp_id);
 
                 string conversoes = "";
                 string label_final = converter($4.tipo, tipo_id, $4.label, conversoes);
@@ -151,55 +232,56 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                 }
 
                 $$.traducao = $4.traducao + conversoes +
-                              "\t" + tabela_simbolos[$2.label].temp +
-                              " = " + label_final + ";\n";
+                              "\t" + temp_id + " = " + label_final + ";\n";
             }
             | TK_ID '=' E ';'
             {
-                if(!tabela_simbolos.count($1.label))
-                {
+                if(!declarada($1.label)) {
                     yyerror("Variavel nao declarada");
                 }
                 
-                string tipo_id = tabela_simbolos[$1.label].tipo;
+                Simbolo var = obter_simbolo($1.label);
                 string conversoes = "";
-                string label_final = converter($3.tipo, tipo_id, $3.label, conversoes);
+                string label_final = converter($3.tipo, var.tipo, $3.label, conversoes);
 
                 if (label_final == "ERRO_TIPO") {
                     yyerror("Tipos incompativeis: nao e possivel converter para bool.");
                 }
 
-                if(tabela_simbolos[$1.label].temp == "")
-                    tabela_simbolos[$1.label].temp = gentempcode(tipo_id);
+                if(var.temp == "") {
+                    var.temp = gentempcode(var.tipo);
+                    atualizar_temp_simbolo($1.label, var.temp);
+                }
 
                 $$.traducao = $3.traducao + conversoes +
-                              "\t" + tabela_simbolos[$1.label].temp +
-                              " = " + label_final + ";\n";
+                              "\t" + var.temp + " = " + label_final + ";\n";
             }
             | TK_ID '=' E
             {
-                if(!tabela_simbolos.count($1.label))
-                {
-                    tabela_simbolos[$1.label].tipo = $3.tipo;
-                    tabela_simbolos[$1.label].temp = "";
+                // Lida com declaracoes implicitas e sem ponto-e-virgula
+                if(!declarada($1.label)) {
+                    inserir_simbolo($1.label, $3.tipo, "");
                 }
 
-                if(tabela_simbolos[$1.label].temp == "")
-                    tabela_simbolos[$1.label].temp = gentempcode(tabela_simbolos[$1.label].tipo);
+                Simbolo var = obter_simbolo($1.label);
+
+                if(var.temp == "") {
+                    var.temp = gentempcode(var.tipo);
+                    atualizar_temp_simbolo($1.label, var.temp);
+                }
 
                 $$.traducao = $3.traducao +
-                              "\t" + tabela_simbolos[$1.label].temp +
-                              " = " + $3.label + ";\n";
+                              "\t" + var.temp + " = " + $3.label + ";\n";
             }
             ;
 
 DECL        : TIPO TK_ID
             {
-                if(tabela_simbolos.count($2.label))
-                    yyerror("Variavel ja declarada");
+                if(declarada_no_escopo_atual($2.label)) {
+                    yyerror("Variavel ja declarada neste escopo");
+                }
 
-                tabela_simbolos[$2.label].tipo = $1.tipo;
-                tabela_simbolos[$2.label].temp = "";
+                inserir_simbolo($2.label, $1.tipo, "");
 
                 $$.traducao = "";
             }
@@ -295,17 +377,21 @@ E           : E '+' E    { $$ = op_aritmetico($1, $3, "+"); }
             }
             | TK_ID
             {
-                if(!tabela_simbolos.count($1.label))
+                if(!declarada($1.label))
                 {
-                    tabela_simbolos[$1.label].tipo = "int";
-                    tabela_simbolos[$1.label].temp = "";
+                    // Comportamento original: declara implicitamente como int
+                    inserir_simbolo($1.label, "int", "");
                 }
 
-                if(tabela_simbolos[$1.label].temp == "")
-                    tabela_simbolos[$1.label].temp = gentempcode(tabela_simbolos[$1.label].tipo);
+                Simbolo var = obter_simbolo($1.label);
+                
+                if(var.temp == "") {
+                    var.temp = gentempcode(var.tipo);
+                    atualizar_temp_simbolo($1.label, var.temp);
+                }
 
-                $$.tipo = tabela_simbolos[$1.label].tipo;
-                $$.label = tabela_simbolos[$1.label].temp;
+                $$.tipo = var.tipo;
+                $$.label = var.temp;
                 $$.traducao = "";
             }
             ;
@@ -316,10 +402,12 @@ E           : E '+' E    { $$ = op_aritmetico($1, $3, "+"); }
 
 int yyparse();
 
-void declaraTemp(){
+string declaraTemp(){
+    string decls = "";
     for (auto &t : temporarios) {
-        codigo_gerado += "\t" + t.second + " " + t.first + ";\n";
+        decls += "\t" + t.second + " " + t.first + ";\n";
     }
+    return decls;
 }
 
 string gentempcode(string tipo)

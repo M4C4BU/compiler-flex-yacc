@@ -1,3 +1,0 @@
-float limite;
-limite = 5.5;
-bool valido = (float) 5 >= limite;
