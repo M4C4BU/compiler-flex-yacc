@@ -1,19 +1,12 @@
-int x = 15;
-float y = 3.5;
-bool ativo = true;
+println("--- TESTE 4: MANIPULACAO DE STRINGS ---");
+string base = "Compilador ";
+string nome = "FOCA";
+string espaco = " - ";
+string status = "Operacional!";
+string final;
 
-if (x >= 10 && ativo) {
-    float temp = x / 2;
-    y = y + temp;
-} else {
-    ativo = !ativo;
-}
+// Testa a concatenacao multipla encadeada
+final = base + nome + espaco + status;
 
-{
-    int x = 50;
-    float y = x * 1.5;
-    
-    if (y != 75.0) {
-        ativo = false;
-    }
-}
+println("Mensagem gerada na memoria: ", final);
+println("Fim do Teste 4.");

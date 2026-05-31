@@ -1,0 +1,41 @@
+Rodar o codigo:
+    1 - Escrever no teste.foca;
+    2 - dar make no terminal;
+    3 - abrir o teste.c para ver o codigo em C;
+    4 - ./teste para compilar o teste.c
+
+
+print("TEXTO", VAR, "TEXTO 2", VAR, "\n"); - "\n" funciona - 
+println(), mesmo esquema que o print, mas com a quebra de linha no final embutida.
+scan(VAR, VAR);
+
+int
+float
+char
+string
+
+// BOOL é feito com o int, sendo 1 ou 0 para True False respectivamente,
+// A string por enquanto é gerada com tamanho fixo, mas irá pegar o tamanho corretamente
+
+if if/else() {}
+
+while(){}
+
+do {} 
+while ();
+
+for - Os 3 campos são opcionais, podendo deixar até: for(;;){};
+switch (opcao){
+    case 'X':
+        ...
+    case 'Y':
+        ...
+    default:
+        print("deu erro");
+}
+break; e continue;
+
+
+prox atualizações:
+    - Ajeitar as strings, pegar tamanho corretamente
+    - Adicionar os += -=, ++ e --;

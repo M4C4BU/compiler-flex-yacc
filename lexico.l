@@ -28,12 +28,25 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 "char"      { return CHAR; }
 "double"    { return DOUBLE; }
 "bool"      { return BOOL_TYPE; }
+"string"    { return STRING; }
+
+"print"     { return PRINT; }
+"println"     { return PRINTLN; }
+"scan"      { return SCAN; }
 
 "if"        { return IF; }
 "else"      { return ELSE; }
 "for"       { return FOR; }
 "while"     { return WHILE; }
+"do"        { return DO; }
 "return"    { return RETURN; }
+"continue"  { return CONTINUE; }
+
+"switch"    { return SWITCH; }
+"case"      { return CASE; }
+"default"   { return DEFAULT; }
+"break"     { return BREAK; }
+":"         { return ':'; }
 
 "=="        { return EQ; }
 "!="        { return NE; }
@@ -61,6 +74,7 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 {FLOAT}     { yylval.label = yytext; return TK_FLOAT; }
 {NUM}       { yylval.label = yytext; return TK_NUM; }
 \'[^\']\'   { yylval.label = yytext; return TK_CHAR; }
+\"([^\"\n]|\\.)*\"  { yylval.label = yytext; return TK_STRING;}
 "true"      { yylval.label = "1"; return TK_BOOL; }
 "false"     { yylval.label = "0"; return TK_BOOL; }
 

@@ -20,7 +20,12 @@ y.tab.c y.tab.h: sintatico.y
 		$(PARSER) $(PARSER_PARAMS)
 
 translate: glf
-		./glf < $(FILE)
+	./glf < $(FILE) > teste.c
+	gcc teste.c -Wno-int-conversion -o teste
+	@echo "./teste"
+
+clean:
+	rm -f y.tab.c y.tab.h lex.yy.c glf teste.c teste
 
 run: glf
 		./glf < $(FILE) > /tmp/foca_output.c && gcc /tmp/foca_output.c -o /tmp/foca_output && /tmp/foca_output
@@ -61,6 +66,3 @@ test-%: glf
 		echo "FAIL - Diferenca:"; \
 		diff <(./glf < $$foca 2>/dev/null) $$expected; \
 	fi
-
-clean:
-	rm -f y.tab.c y.tab.h lex.yy.c glf
