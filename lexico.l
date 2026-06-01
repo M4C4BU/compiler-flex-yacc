@@ -17,7 +17,7 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 
 %%
 
-[ \t]+      
+[ \t\r]+      
 \n          { linha++;}
 
 "//".*

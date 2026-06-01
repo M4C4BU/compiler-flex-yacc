@@ -458,6 +458,10 @@ ARGS_SCAN   : ARGS_SCAN ',' TK_ID
                 string formato = obter_formatador(var.tipo);
                 
                 // Concatena a leitura das variaveis anteriores com a atual
+                if(var.tipo == "char")
+                $$.traducao = $1.traducao + 
+                              "\tscanf(\" " + formato + "\", " + comercial + var.temp + ");\n";
+                else
                 $$.traducao = $1.traducao + 
                               "\tscanf(\"" + formato + "\", " + comercial + var.temp + ");\n";
             }
@@ -478,17 +482,21 @@ ARGS_SCAN   : ARGS_SCAN ',' TK_ID
                 string formato = obter_formatador(var.tipo);
                 
                 // Base da recursao (primeira variavel)
+                if(var.tipo == "char")
+                $$.traducao = "\tscanf(\" " + formato + "\", " + comercial + var.temp + ");\n";
+                else
                 $$.traducao = "\tscanf(\"" + formato + "\", " + comercial + var.temp + ");\n";
             }
             ;
-CASOS       : CASO CASOS
-              {
-                  $$.traducao = $1.traducao + $2.traducao;
-              }
-            | CASO
-              {
-                  $$.traducao = $1.traducao;
-              }
+CASOS   :   LISTA_CASES
+            {
+                $$.traducao = $1.traducao;
+            }
+
+            | LISTA_CASES DEFAULT ':' COMANDOS
+            {
+                $$.traducao = $1.traducao + $4.traducao;
+            }
             ;
 ATRIB_FOR   : TK_ID '=' E
             {
@@ -536,18 +544,32 @@ OPT_E         : E
               }
               ;
 
-CASO        : CASE E ':' COMANDOS
+LISTA_CASES: CASO_NORMAL LISTA_CASES
+            {
+                $$.traducao = $1.traducao + $2.traducao;
+            }
+
+            | CASO_NORMAL
+            {
+                $$.traducao = $1.traducao;
+            }
+            ;
+CASO_NORMAL:CASE E ':' COMANDOS
               {
                   // Resgata quem e o switch alvo
-                  string var_label = switch_expr_stack.back();
-                  string var_tipo = switch_tipo_stack.back();
-                  string l_fim = stack_fim.back();
-                  string l_next = gen_label(); // Se errar esse case, pula pro proximo
-                  string temp_cond = gentempcode("bool");
+                string var_label = switch_expr_stack.back();
+                string var_tipo = switch_tipo_stack.back();
+                string l_fim = stack_fim.back();
+                string l_next = gen_label(); // Se errar esse case, pula pro proximo
+                string temp_cond = gentempcode("bool");
 
-                  if (var_tipo == "string" || $2.tipo == "string") {
-                      yyerror("O switch ainda nao suporta comparacao de strings.");
-                  }
+                if (var_tipo == "string" || $2.tipo == "string") {
+                    yyerror("O switch ainda nao suporta comparacao de strings.");
+                }
+                  if(var_tipo != $2.tipo)
+                {
+                    yyerror("Tipo do case incompatível com o tipo do switch.");
+                }
 
                   // Monta o "if" desse caso
                   $$.traducao = $2.traducao +
@@ -556,11 +578,6 @@ CASO        : CASE E ':' COMANDOS
                                 $4.traducao +
                                 "\tgoto " + l_fim + ";\n" + // Break automatico no fim do case
                                 "\t" + l_next + ":\n";
-              }
-            | DEFAULT ':' COMANDOS
-              {
-                  // O default e executado direto se sobrar pra ele
-                  $$.traducao = $3.traducao;
               }
             ;
 

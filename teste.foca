@@ -1,12 +1,12 @@
-println("--- TESTE 4: MANIPULACAO DE STRINGS ---");
-string base = "Compilador ";
-string nome = "FOCA";
-string espaco = " - ";
-string status = "Operacional!";
-string final;
+switch(2)
+{
+    case 1.3:
+        print(1);
 
-// Testa a concatenacao multipla encadeada
-final = base + nome + espaco + status;
+    case 2:
+        print(2);
+        
+    default:
+        print(3);
 
-println("Mensagem gerada na memoria: ", final);
-println("Fim do Teste 4.");
+}
