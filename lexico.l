@@ -56,6 +56,14 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 "||"        { return OR; }
 "!"         { return NOT; }
 
+"++"        { return INC; }
+"--"        { return DEC; }
+"+="        { return PLUS_EQ; }
+"-="        { return MINUS_EQ; }
+"*="        { return MUL_EQ; }
+"/="        { return DIV_EQ; }
+"%="        { return MOD_EQ; }
+
 "+"         { return '+'; }
 "-"         { return '-'; }
 "*"         { return '*'; }

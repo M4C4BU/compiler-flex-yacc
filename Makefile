@@ -4,7 +4,7 @@ SCANNER_PARAMS := lexico.l
 PARSER := bison
 PARSER_PARAMS := -d --yacc sintatico.y
 CXXFLAGS := -Wno-free-nonheap-object
-FILE := teste.foca
+FILE := teste.honor
 
 all: glf translate
 
@@ -25,15 +25,15 @@ translate: glf
 	@echo "./teste"
 
 clean:
-	rm -f y.tab.c y.tab.h lex.yy.c glf teste.c teste
+	rm -f y.tab.c y.tab.h lex.yy.c glf teste.c teste 
 
 run: glf
 		./glf < $(FILE) > /tmp/foca_output.c && gcc /tmp/foca_output.c -o /tmp/foca_output && /tmp/foca_output
 
 test: glf
 	@pass=0; fail=0; \
-	for f in exemplos/*.foca; do \
-		name=$$(basename $$f .foca); \
+	for f in exemplos/*.honor; do \
+		name=$$(basename $$f .honor); \
 		expected="exemplos/$$name.expected"; \
 		if [ -f "$$expected" ]; then \
 			if ./glf < $$f 2>/dev/null | diff -q - $$expected > /dev/null 2>&1; then \
@@ -50,12 +50,12 @@ test: glf
 
 test-%: glf
 	@name=$(patsubst test-%,%,$@); \
-	foca=$$(ls exemplos/$${name}_*.foca 2>/dev/null | head -1); \
+	foca=$$(ls exemplos/$${name}_*.honor 2>/dev/null | head -1); \
 	if [ -z "$$foca" ]; then \
 		echo "Exemplo nao encontrado para etapa $$name"; \
 		exit 1; \
 	fi; \
-	expected=$$(echo $$foca | sed 's/.foca/.expected/'); \
+	expected=$$(echo $$foca | sed 's/.honor/.expected/'); \
 	echo "Entrada: $$foca"; \
 	echo "---"; \
 	./glf < $$foca; \

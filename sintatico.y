@@ -20,6 +20,8 @@ struct atributos
     string label;
     string traducao;
     string tipo;
+    string kind; // "lit" | "temp" | "var" -- so' relevante quando tipo == "string".
+                 // Define como o ownership do buffer de memoria deve ser tratado.
 };
 
 struct Simbolo {
@@ -78,11 +80,17 @@ string gen_label() {
 }
 
 string obter_formatador(string tipo) {
-    if (tipo == "int" || tipo == "bool") return "%d";
+    if (tipo == "int") return "%d";
     if (tipo == "float") return "%f";
     if (tipo == "char") return "%c";
     if (tipo == "string") return "%s";
     return "";
+}
+
+string gerar_printf(string tipo, string label) {
+    if (tipo == "bool")
+        return "\tprintf(\"%s\", " + label + " ? \"true\" : \"false\");\n";
+    return "\tprintf(\"" + obter_formatador(tipo) + "\", " + label + ");\n";
 }
 
 string maior_tipo(string t1, string t2) {
@@ -137,10 +145,53 @@ atributos op_relacional(atributos e1, atributos e2, string op) {
     return res;
 }
 
+// ---------------------------------------------------------------------------
+// Gerenciamento de memoria dinamica para strings
+// ---------------------------------------------------------------------------
+//
+// Toda variavel/temporario do tipo "string" e' um "char*" inicializado em
+// NULL (ver declaraTemp()). Isso permite que UMA UNICA regra cubra tanto a
+// primeira atribuicao quanto reatribuicoes:
+//
+//     if (destino) free(destino);   // nunca e' free em ponteiro lixo/NULL
+//     destino = ...;                 // novo valor
+//
+// O "kind" de quem esta' do lado direito decide como o novo valor e' obtido:
+//   - "temp": e' um buffer recem-alocado (ex.: resultado de concatenacao) que
+//             ninguem mais referencia -> a posse e' simplesmente transferida
+//             (sem malloc/strcpy extra).
+//   - "lit" ou "var": e' memoria que NAO pertence a essa atribuicao (um
+//             literal estatico ou o buffer de outra variavel) -> precisamos
+//             copiar para um buffer proprio, senao duas variaveis ficariam
+//             apontando para o mesmo bloco e um "free" de uma delas
+//             invalidaria a outra (double free / use-after-free).
+string atribuir_string(string destino, atributos origem) {
+    string cod = origem.traducao;
+    cod += "\tif(" + destino + ") free(" + destino + ");\n";
+
+    if (origem.kind == "temp") {
+        cod += "\t" + destino + " = " + origem.label + ";\n";
+    } else {
+        cod += "\t" + destino + " = malloc(contar_chars(" + origem.label + ") + 1);\n";
+        cod += "\tstrcpy(" + destino + ", " + origem.label + ");\n";
+    }
+    return cod;
+}
+
 string montar_programa(string traducao_interna) {
     string prog = "/*Compilador FOCA*/\n"
                   "#include <stdio.h>\n"
                   "#include <string.h>\n"
+                  "#include <stdlib.h>\n\n"
+                  "int contar_chars(char* s){\n"
+                  "\tint i = 0;\n"
+                  "\tL_cc_loop:\n"
+                  "\tif(s[i] == '\\0') goto L_cc_fim;\n"
+                  "\ti = i + 1;\n"
+                  "\tgoto L_cc_loop;\n"
+                  "\tL_cc_fim:\n"
+                  "\treturn i;\n"
+                  "}\n\n"
                   "int main(void) {\n";
                   
     prog += declaraTemp();
@@ -158,6 +209,8 @@ string montar_programa(string traducao_interna) {
 %token NOT
 %token PRINT SCAN PRINTLN
 %token IF ELSE SWITCH CASE DEFAULT BREAK
+%token INC DEC
+%token PLUS_EQ MINUS_EQ MUL_EQ DIV_EQ MOD_EQ
 
 %start S
 
@@ -169,6 +222,8 @@ string montar_programa(string traducao_interna) {
 %left '*' '/' '%'
 %right NOT
 %right PREC_CAST
+%right UMINUS UPLUS
+%right INC DEC
 
 %%
 
@@ -179,11 +234,25 @@ S           : E        { codigo_gerado = montar_programa($1.traducao); }
 BLOCO_INICIO : '{' { pilha_tabelas.push_back(map<string, Simbolo>()); } 
              ;
 
-BLOCO_FIM    : '}' { pilha_tabelas.pop_back(); } 
+BLOCO_FIM    : '}' 
+             {
+                 // Ao sair do escopo, libera qualquer string declarada dentro dele.
+                 // Essencial em laços (while/for/do): o bloco e' re-executado varias
+                 // vezes via goto, entao sem isso cada iteracao deixaria um leak.
+                 string limpeza;
+                 for (auto &par : pilha_tabelas.back()) {
+                     if (par.second.tipo == "string" && par.second.temp != "") {
+                         limpeza += "\tif(" + par.second.temp + ") { free(" + par.second.temp +
+                                    "); " + par.second.temp + " = NULL; }\n";
+                     }
+                 }
+                 pilha_tabelas.pop_back();
+                 $$.traducao = limpeza;
+             } 
              ;
 
-BLOCO        : BLOCO_INICIO COMANDOS BLOCO_FIM  {$$.traducao = $2.traducao; }
-             | BLOCO_INICIO BLOCO_FIM {$$.traducao = ""; }
+BLOCO        : BLOCO_INICIO COMANDOS BLOCO_FIM  {$$.traducao = $2.traducao + $3.traducao; }
+             | BLOCO_INICIO BLOCO_FIM {$$.traducao = $2.traducao; }
              ;
 
 COMANDOS    : COMANDO COMANDOS
@@ -343,8 +412,10 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                 inserir_simbolo($2.label, tipo_id, temp_id);
 
                 if(tipo_id == "string") {
-                    $$.traducao = $4.traducao +
-                                  "\tstrcpy(" + temp_id + ", " + $4.label + ");\n";
+                    if ($4.tipo != "string") {
+                        yyerror("Tipos incompativeis: esperado uma string.");
+                    }
+                    $$.traducao = atribuir_string(temp_id, $4);
                 } else {
                     string conversoes = "";
                     string label_final = converter($4.tipo, tipo_id, $4.label, conversoes);
@@ -371,8 +442,10 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                 }
 
                 if(var.tipo == "string") {
-                    $$.traducao = $3.traducao +
-                                  "\tstrcpy(" + var.temp + ", " + $3.label + ");\n";
+                    if ($3.tipo != "string") {
+                        yyerror("Tipos incompativeis: esperado uma string.");
+                    }
+                    $$.traducao = atribuir_string(var.temp, $3);
                 } else {
                     string conversoes = "";
                     string label_final = converter($3.tipo, var.tipo, $3.label, conversoes);
@@ -400,12 +473,112 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                 }
 
                 if(var.tipo == "string") {
-                    $$.traducao = $3.traducao +
-                                  "\tstrcpy(" + var.temp + ", " + $3.label + ");\n";
+                    if ($3.tipo != "string") {
+                        yyerror("Tipos incompativeis: esperado uma string.");
+                    }
+                    $$.traducao = atribuir_string(var.temp, $3);
                 } else {
                     $$.traducao = $3.traducao +
                                   "\t" + var.temp + " = " + $3.label + ";\n";
                 }
+            }
+            | TK_ID INC ';'
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador ++ nao suportado para o tipo " + var.tipo + ".");
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " + 1;\n";
+            }
+            | INC TK_ID ';'
+            {
+                if(!declarada($2.label)) yyerror("Variavel nao declarada: " + $2.label);
+                Simbolo var = obter_simbolo($2.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador ++ nao suportado para o tipo " + var.tipo + ".");
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " + 1;\n";
+            }
+            | TK_ID DEC ';'
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador -- nao suportado para o tipo " + var.tipo + ".");
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " - 1;\n";
+            }
+            | DEC TK_ID ';'
+            {
+                if(!declarada($2.label)) yyerror("Variavel nao declarada: " + $2.label);
+                Simbolo var = obter_simbolo($2.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador -- nao suportado para o tipo " + var.tipo + ".");
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " - 1;\n";
+            }
+            | TK_ID PLUS_EQ E ';'
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "bool") yyerror("Operador += nao suportado para bool.");
+                if(var.tipo == "string") {
+                    if($3.tipo != "string") yyerror("Concatenacao += exige duas strings.");
+                    string t_new = gentempcode("string");
+                    string cod = $3.traducao;
+                    cod += "\t" + t_new + " = malloc(contar_chars(" + var.temp + ") + contar_chars(" + $3.label + ") + 1);\n";
+                    cod += "\tstrcpy(" + t_new + ", " + var.temp + ");\n";
+                    cod += "\tstrcat(" + t_new + ", " + $3.label + ");\n";
+                    if($3.kind == "temp") cod += "\tfree(" + $3.label + ");\n";
+                    cod += "\tif(" + var.temp + ") free(" + var.temp + ");\n";
+                    cod += "\t" + var.temp + " = " + t_new + ";\n";
+                    $$.traducao = cod;
+                } else {
+                    string conv = "";
+                    string lf = converter($3.tipo, var.tipo, $3.label, conv);
+                    if(lf == "ERRO_TIPO") yyerror("Tipos incompativeis em +=.");
+                    $$.traducao = $3.traducao + conv + "\t" + var.temp + " += " + lf + ";\n";
+                }
+            }
+            | TK_ID MINUS_EQ E ';'
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador -= nao suportado para o tipo " + var.tipo + ".");
+                string conv = "";
+                string lf = converter($3.tipo, var.tipo, $3.label, conv);
+                if(lf == "ERRO_TIPO") yyerror("Tipos incompativeis em -=.");
+                $$.traducao = $3.traducao + conv + "\t" + var.temp + " -= " + lf + ";\n";
+            }
+            | TK_ID MUL_EQ E ';'
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador *= nao suportado para o tipo " + var.tipo + ".");
+                string conv = "";
+                string lf = converter($3.tipo, var.tipo, $3.label, conv);
+                if(lf == "ERRO_TIPO") yyerror("Tipos incompativeis em *=.");
+                $$.traducao = $3.traducao + conv + "\t" + var.temp + " *= " + lf + ";\n";
+            }
+            | TK_ID DIV_EQ E ';'
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador /= nao suportado para o tipo " + var.tipo + ".");
+                string conv = "";
+                string lf = converter($3.tipo, var.tipo, $3.label, conv);
+                if(lf == "ERRO_TIPO") yyerror("Tipos incompativeis em /=.");
+                $$.traducao = $3.traducao + conv + "\t" + var.temp + " /= " + lf + ";\n";
+            }
+            | TK_ID MOD_EQ E ';'
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo != "int" && var.tipo != "char")
+                    yyerror("Operador %= so suportado para int e char.");
+                if($3.tipo != "int" && $3.tipo != "char")
+                    yyerror("Operador %= exige int ou char no lado direito.");
+                $$.traducao = $3.traducao + "\t" + var.temp + " %= " + $3.label + ";\n";
             }
             | PRINT '(' ARGS_PRINT ')' ';'
             {
@@ -425,19 +598,21 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
 
 ARGS_PRINT  : ARGS_PRINT ',' E
             {
-                string formato = obter_formatador($3.tipo);
-                
-                // Mantem a execucao anterior ($1), calcula a expressao atual ($3) e imprime
+                string liberar = ($3.tipo == "string" && $3.kind == "temp")
+                                  ? ("\tfree(" + $3.label + ");\n") : "";
+
                 $$.traducao = $1.traducao + $3.traducao +
-                              "\tprintf(\"" + formato + "\", " + $3.label + ");\n";
+                              gerar_printf($3.tipo, $3.label) +
+                              liberar;
             }
             | E
             {
-                string formato = obter_formatador($1.tipo);
-                
-                // Base da recursao (primeiro argumento)
+                string liberar = ($1.tipo == "string" && $1.kind == "temp")
+                                  ? ("\tfree(" + $1.label + ");\n") : "";
+
                 $$.traducao = $1.traducao +
-                              "\tprintf(\"" + formato + "\", " + $1.label + ");\n";
+                              gerar_printf($1.tipo, $1.label) +
+                              liberar;
             }
             ;
 
@@ -454,16 +629,23 @@ ARGS_SCAN   : ARGS_SCAN ',' TK_ID
                     atualizar_temp_simbolo($3.label, var.temp);
                 }
                 
-                string comercial = (var.tipo == "string") ? "" : "&";
-                string formato = obter_formatador(var.tipo);
+                string leitura;
+                if (var.tipo == "string") {
+                    // Strings sao char*. Libera o buffer antigo (se houver) e aloca
+                    // um novo para receber a leitura -- sem isso, scanf escreveria
+                    // num ponteiro NULL na primeira leitura.
+                    leitura = "\tif(" + var.temp + ") free(" + var.temp + ");\n" +
+                              "\t" + var.temp + " = malloc(1024);\n" +
+                              "\tscanf(\"%s\", " + var.temp + ");\n";
+                } else {
+                    string formato = obter_formatador(var.tipo);
+                    if(var.tipo == "char")
+                        leitura = "\tscanf(\" " + formato + "\", &" + var.temp + ");\n";
+                    else
+                        leitura = "\tscanf(\"" + formato + "\", &" + var.temp + ");\n";
+                }
                 
-                // Concatena a leitura das variaveis anteriores com a atual
-                if(var.tipo == "char")
-                $$.traducao = $1.traducao + 
-                              "\tscanf(\" " + formato + "\", " + comercial + var.temp + ");\n";
-                else
-                $$.traducao = $1.traducao + 
-                              "\tscanf(\"" + formato + "\", " + comercial + var.temp + ");\n";
+                $$.traducao = $1.traducao + leitura;
             }
             | TK_ID
             {
@@ -478,14 +660,17 @@ ARGS_SCAN   : ARGS_SCAN ',' TK_ID
                     atualizar_temp_simbolo($1.label, var.temp);
                 }
                 
-                string comercial = (var.tipo == "string") ? "" : "&";
-                string formato = obter_formatador(var.tipo);
-                
-                // Base da recursao (primeira variavel)
-                if(var.tipo == "char")
-                $$.traducao = "\tscanf(\" " + formato + "\", " + comercial + var.temp + ");\n";
-                else
-                $$.traducao = "\tscanf(\"" + formato + "\", " + comercial + var.temp + ");\n";
+                if (var.tipo == "string") {
+                    $$.traducao = "\tif(" + var.temp + ") free(" + var.temp + ");\n" +
+                                  "\t" + var.temp + " = malloc(1024);\n" +
+                                  "\tscanf(\"%s\", " + var.temp + ");\n";
+                } else {
+                    string formato = obter_formatador(var.tipo);
+                    if(var.tipo == "char")
+                        $$.traducao = "\tscanf(\" " + formato + "\", &" + var.temp + ");\n";
+                    else
+                        $$.traducao = "\tscanf(\"" + formato + "\", &" + var.temp + ");\n";
+                }
             }
             ;
 CASOS   :   LISTA_CASES
@@ -500,25 +685,113 @@ CASOS   :   LISTA_CASES
             ;
 ATRIB_FOR   : TK_ID '=' E
             {
-                // Mesma logica de declaracao implicita que voce ja usa
                 if(!declarada($1.label)) {
                     inserir_simbolo($1.label, $3.tipo, "");
                 }
-
                 Simbolo var = obter_simbolo($1.label);
-
                 if(var.temp == "") {
                     var.temp = gentempcode(var.tipo);
                     atualizar_temp_simbolo($1.label, var.temp);
                 }
-
                 if(var.tipo == "string") {
-                    $$.traducao = $3.traducao +
-                                  "\tstrcpy(" + var.temp + ", " + $3.label + ");\n";
+                    if ($3.tipo != "string") yyerror("Tipos incompativeis: esperado uma string.");
+                    $$.traducao = atribuir_string(var.temp, $3);
                 } else {
-                    $$.traducao = $3.traducao +
-                                  "\t" + var.temp + " = " + $3.label + ";\n";
+                    $$.traducao = $3.traducao + "\t" + var.temp + " = " + $3.label + ";\n";
                 }
+            }
+            | TK_ID INC
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador ++ nao suportado para o tipo " + var.tipo + ".");
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " + 1;\n";
+            }
+            | INC TK_ID
+            {
+                if(!declarada($2.label)) yyerror("Variavel nao declarada: " + $2.label);
+                Simbolo var = obter_simbolo($2.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador ++ nao suportado para o tipo " + var.tipo + ".");
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " + 1;\n";
+            }
+            | TK_ID DEC
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador -- nao suportado para o tipo " + var.tipo + ".");
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " - 1;\n";
+            }
+            | DEC TK_ID
+            {
+                if(!declarada($2.label)) yyerror("Variavel nao declarada: " + $2.label);
+                Simbolo var = obter_simbolo($2.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador -- nao suportado para o tipo " + var.tipo + ".");
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " - 1;\n";
+            }
+            | TK_ID PLUS_EQ E
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "bool") yyerror("Operador += nao suportado para bool.");
+                if(var.tipo == "string") {
+                    if($3.tipo != "string") yyerror("Concatenacao += exige duas strings.");
+                    string t_new = gentempcode("string");
+                    string cod = $3.traducao;
+                    cod += "\t" + t_new + " = malloc(contar_chars(" + var.temp + ") + contar_chars(" + $3.label + ") + 1);\n";
+                    cod += "\tstrcpy(" + t_new + ", " + var.temp + ");\n";
+                    cod += "\tstrcat(" + t_new + ", " + $3.label + ");\n";
+                    if($3.kind == "temp") cod += "\tfree(" + $3.label + ");\n";
+                    cod += "\tif(" + var.temp + ") free(" + var.temp + ");\n";
+                    cod += "\t" + var.temp + " = " + t_new + ";\n";
+                    $$.traducao = cod;
+                } else {
+                    string conv = "";
+                    string lf = converter($3.tipo, var.tipo, $3.label, conv);
+                    if(lf == "ERRO_TIPO") yyerror("Tipos incompativeis em +=.");
+                    $$.traducao = $3.traducao + conv + "\t" + var.temp + " += " + lf + ";\n";
+                }
+            }
+            | TK_ID MINUS_EQ E
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool") yyerror("Operador -= nao suportado para o tipo " + var.tipo + ".");
+                string conv = "";
+                string lf = converter($3.tipo, var.tipo, $3.label, conv);
+                if(lf == "ERRO_TIPO") yyerror("Tipos incompativeis em -=.");
+                $$.traducao = $3.traducao + conv + "\t" + var.temp + " -= " + lf + ";\n";
+            }
+            | TK_ID MUL_EQ E
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool") yyerror("Operador *= nao suportado para o tipo " + var.tipo + ".");
+                string conv = "";
+                string lf = converter($3.tipo, var.tipo, $3.label, conv);
+                if(lf == "ERRO_TIPO") yyerror("Tipos incompativeis em *=.");
+                $$.traducao = $3.traducao + conv + "\t" + var.temp + " *= " + lf + ";\n";
+            }
+            | TK_ID DIV_EQ E
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool") yyerror("Operador /= nao suportado para o tipo " + var.tipo + ".");
+                string conv = "";
+                string lf = converter($3.tipo, var.tipo, $3.label, conv);
+                if(lf == "ERRO_TIPO") yyerror("Tipos incompativeis em /=.");
+                $$.traducao = $3.traducao + conv + "\t" + var.temp + " /= " + lf + ";\n";
+            }
+            | TK_ID MOD_EQ E
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo != "int" && var.tipo != "char") yyerror("Operador %= so suportado para int e char.");
+                if($3.tipo != "int" && $3.tipo != "char") yyerror("Operador %= exige int ou char no lado direito.");
+                $$.traducao = $3.traducao + "\t" + var.temp + " %= " + $3.label + ";\n";
             }
             ;
 OPT_ATRIB_FOR : ATRIB_FOR 
@@ -605,11 +878,25 @@ E           : E '+' E
             {
                 if($1.tipo == "string" && $3.tipo == "string"){
                     $$.tipo = "string";
+                    $$.kind = "temp"; // resultado e' um buffer novo, ninguem mais e' dono dele ainda
                     $$.label = gentempcode("string");
 
-                    $$.traducao = $1.traducao + $3.traducao +
-                    "\tstrcpy("+ $$.label + ", " + $1.label + ");\n" + 
-                    "\tstrcat("+ $$.label +", " + $3.label + ");\n";
+                    string cod = $1.traducao + $3.traducao;
+
+                    // Um malloc do tamanho exato (sem strlen: usa contar_chars) +
+                    // um strcpy + um strcat. Sem buffers desperdicados.
+                    cod += "\t" + $$.label + " = malloc(contar_chars(" + $1.label +
+                           ") + contar_chars(" + $3.label + ") + 1);\n";
+                    cod += "\tstrcpy(" + $$.label + ", " + $1.label + ");\n";
+                    cod += "\tstrcat(" + $$.label + ", " + $3.label + ");\n";
+
+                    // Operandos que eram temporarios intermediarios (ex.: em "a+b+c",
+                    // o resultado de "a+b") nao sao mais necessarios -> libera aqui,
+                    // senao concatenacoes encadeadas vazam memoria a cada "+".
+                    if ($1.kind == "temp") cod += "\tfree(" + $1.label + ");\n";
+                    if ($3.kind == "temp") cod += "\tfree(" + $3.label + ");\n";
+
+                    $$.traducao = cod;
                 }else if($1.tipo == "string" || $3.tipo == "string"){
                     yyerror("Concatenação exige duas strings.");
                 }
@@ -710,6 +997,10 @@ E           : E '+' E
             }
             | '(' TIPO ')' E %prec PREC_CAST
             {
+                if ($2.tipo == "string" || $4.tipo == "string") {
+                    yyerror("Cast envolvendo strings nao e suportado.");
+                }
+
                 string temp_copia = gentempcode($4.tipo);
                 string temp_cast  = gentempcode($2.tipo);
                 $$.tipo  = $2.tipo;
@@ -727,6 +1018,7 @@ E           : E '+' E
                 $$.label = $2.label;
                 $$.traducao = $2.traducao;
                 $$.tipo = $2.tipo;
+                $$.kind = $2.kind;
             }
             | TK_FLOAT
             {
@@ -764,6 +1056,7 @@ E           : E '+' E
             | TK_STRING
             {
                 $$.tipo = "string";
+                $$.kind = "lit"; // literal estatico -- nunca e' dono de memoria heap
                 $$.label = $1.label;
                 $$.traducao = "";
             }
@@ -771,12 +1064,11 @@ E           : E '+' E
             {
                 if(!declarada($1.label))
                 {
-                    // Comportamento original: declara implicitamente como int
-                    inserir_simbolo($1.label, "int", "");
+                    yyerror("Variavel nao declarada: " + $1.label);
                 }
 
                 Simbolo var = obter_simbolo($1.label);
-                
+
                 if(var.temp == "") {
                     var.temp = gentempcode(var.tipo);
                     atualizar_temp_simbolo($1.label, var.temp);
@@ -784,7 +1076,68 @@ E           : E '+' E
 
                 $$.tipo = var.tipo;
                 $$.label = var.temp;
+                $$.kind = (var.tipo == "string") ? "var" : "";
                 $$.traducao = "";
+            }
+            | '-' E %prec UMINUS
+            {
+                if($2.tipo == "string" || $2.tipo == "bool")
+                    yyerror("Operador unario - nao suportado para o tipo " + $2.tipo + ".");
+                $$.tipo = $2.tipo;
+                $$.label = gentempcode($2.tipo);
+                $$.traducao = $2.traducao + "\t" + $$.label + " = -" + $2.label + ";\n";
+            }
+            | '+' E %prec UPLUS
+            {
+                if($2.tipo == "string" || $2.tipo == "bool")
+                    yyerror("Operador unario + nao suportado para o tipo " + $2.tipo + ".");
+                $$.tipo = $2.tipo;
+                $$.label = $2.label;
+                $$.traducao = $2.traducao;
+            }
+            | INC TK_ID
+            {
+                if(!declarada($2.label)) yyerror("Variavel nao declarada: " + $2.label);
+                Simbolo var = obter_simbolo($2.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador ++ nao suportado para o tipo " + var.tipo + ".");
+                $$.tipo = var.tipo;
+                $$.label = var.temp;
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " + 1;\n";
+            }
+            | DEC TK_ID
+            {
+                if(!declarada($2.label)) yyerror("Variavel nao declarada: " + $2.label);
+                Simbolo var = obter_simbolo($2.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador -- nao suportado para o tipo " + var.tipo + ".");
+                $$.tipo = var.tipo;
+                $$.label = var.temp;
+                $$.traducao = "\t" + var.temp + " = " + var.temp + " - 1;\n";
+            }
+            | TK_ID INC
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador ++ nao suportado para o tipo " + var.tipo + ".");
+                string t_old = gentempcode(var.tipo);
+                $$.tipo = var.tipo;
+                $$.label = t_old;
+                $$.traducao = "\t" + t_old + " = " + var.temp + ";\n"
+                            + "\t" + var.temp + " = " + var.temp + " + 1;\n";
+            }
+            | TK_ID DEC
+            {
+                if(!declarada($1.label)) yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo var = obter_simbolo($1.label);
+                if(var.tipo == "string" || var.tipo == "bool")
+                    yyerror("Operador -- nao suportado para o tipo " + var.tipo + ".");
+                string t_old = gentempcode(var.tipo);
+                $$.tipo = var.tipo;
+                $$.label = t_old;
+                $$.traducao = "\t" + t_old + " = " + var.temp + ";\n"
+                            + "\t" + var.temp + " = " + var.temp + " - 1;\n";
             }
             ;
 
@@ -799,7 +1152,11 @@ string declaraTemp(){
 
     for (auto &t : temporarios) {
         if(t.second == "string"){
-            s += "\tchar " + t.first + "[1024];\n";
+            // char* dinamico, sempre comeca em NULL -> nunca ha free em
+            // ponteiro nao inicializado, e o guard "if(x) free(x);" em
+            // qualquer atribuicao posterior cobre tanto a 1a atribuicao
+            // quanto reatribuicoes.
+            s += "\tchar* " + t.first + " = NULL;\n";
         }
         else if(t.second == "bool"){
             s += "\tint " + t.first + ";\n";
