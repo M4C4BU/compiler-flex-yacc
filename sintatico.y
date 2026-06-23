@@ -172,7 +172,11 @@ string atribuir_string(string destino, atributos origem) {
     if (origem.kind == "temp") {
         cod += "\t" + destino + " = " + origem.label + ";\n";
     } else {
-        cod += "\t" + destino + " = malloc(contar_chars(" + origem.label + ") + 1);\n";
+        string t_len  = gentempcode("int");
+        string t_size = gentempcode("int");
+        cod += "\t" + t_len  + " = contar_chars(" + origem.label + ");\n";
+        cod += "\t" + t_size + " = " + t_len + " + 1;\n";
+        cod += "\t" + destino + " = malloc(" + t_size + ");\n";
         cod += "\tstrcpy(" + destino + ", " + origem.label + ");\n";
     }
     return cod;
@@ -521,9 +525,17 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                 if(var.tipo == "bool") yyerror("Operador += nao suportado para bool.");
                 if(var.tipo == "string") {
                     if($3.tipo != "string") yyerror("Concatenacao += exige duas strings.");
-                    string t_new = gentempcode("string");
+                    string t_new  = gentempcode("string");
+                    string t_len1 = gentempcode("int");
+                    string t_len2 = gentempcode("int");
+                    string t_sum  = gentempcode("int");
+                    string t_size = gentempcode("int");
                     string cod = $3.traducao;
-                    cod += "\t" + t_new + " = malloc(contar_chars(" + var.temp + ") + contar_chars(" + $3.label + ") + 1);\n";
+                    cod += "\t" + t_len1 + " = contar_chars(" + var.temp + ");\n";
+                    cod += "\t" + t_len2 + " = contar_chars(" + $3.label + ");\n";
+                    cod += "\t" + t_sum  + " = " + t_len1 + " + " + t_len2 + ";\n";
+                    cod += "\t" + t_size + " = " + t_sum  + " + 1;\n";
+                    cod += "\t" + t_new  + " = malloc(" + t_size + ");\n";
                     cod += "\tstrcpy(" + t_new + ", " + var.temp + ");\n";
                     cod += "\tstrcat(" + t_new + ", " + $3.label + ");\n";
                     if($3.kind == "temp") cod += "\tfree(" + $3.label + ");\n";
@@ -739,9 +751,17 @@ ATRIB_FOR   : TK_ID '=' E
                 if(var.tipo == "bool") yyerror("Operador += nao suportado para bool.");
                 if(var.tipo == "string") {
                     if($3.tipo != "string") yyerror("Concatenacao += exige duas strings.");
-                    string t_new = gentempcode("string");
+                    string t_new  = gentempcode("string");
+                    string t_len1 = gentempcode("int");
+                    string t_len2 = gentempcode("int");
+                    string t_sum  = gentempcode("int");
+                    string t_size = gentempcode("int");
                     string cod = $3.traducao;
-                    cod += "\t" + t_new + " = malloc(contar_chars(" + var.temp + ") + contar_chars(" + $3.label + ") + 1);\n";
+                    cod += "\t" + t_len1 + " = contar_chars(" + var.temp + ");\n";
+                    cod += "\t" + t_len2 + " = contar_chars(" + $3.label + ");\n";
+                    cod += "\t" + t_sum  + " = " + t_len1 + " + " + t_len2 + ";\n";
+                    cod += "\t" + t_size + " = " + t_sum  + " + 1;\n";
+                    cod += "\t" + t_new  + " = malloc(" + t_size + ");\n";
                     cod += "\tstrcpy(" + t_new + ", " + var.temp + ");\n";
                     cod += "\tstrcat(" + t_new + ", " + $3.label + ");\n";
                     if($3.kind == "temp") cod += "\tfree(" + $3.label + ");\n";
@@ -883,10 +903,16 @@ E           : E '+' E
 
                     string cod = $1.traducao + $3.traducao;
 
-                    // Um malloc do tamanho exato (sem strlen: usa contar_chars) +
-                    // um strcpy + um strcat. Sem buffers desperdicados.
-                    cod += "\t" + $$.label + " = malloc(contar_chars(" + $1.label +
-                           ") + contar_chars(" + $3.label + ") + 1);\n";
+                    // TAC (Dragon Book): cada operacao e uma instrucao separada.
+                    string t_len1 = gentempcode("int");
+                    string t_len2 = gentempcode("int");
+                    string t_sum  = gentempcode("int");
+                    string t_size = gentempcode("int");
+                    cod += "\t" + t_len1 + " = contar_chars(" + $1.label + ");\n";
+                    cod += "\t" + t_len2 + " = contar_chars(" + $3.label + ");\n";
+                    cod += "\t" + t_sum  + " = " + t_len1 + " + " + t_len2 + ";\n";
+                    cod += "\t" + t_size + " = " + t_sum  + " + 1;\n";
+                    cod += "\t" + $$.label + " = malloc(" + t_size + ");\n";
                     cod += "\tstrcpy(" + $$.label + ", " + $1.label + ");\n";
                     cod += "\tstrcat(" + $$.label + ", " + $3.label + ");\n";
 

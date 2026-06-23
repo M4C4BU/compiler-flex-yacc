@@ -25,6 +25,6 @@ switch (opcao){
 }
 
 
-String dinamica
+String dinamica e consertada
 break; e continue;
 Operadores Unarios e Compostos;
