@@ -27,7 +27,13 @@ switch (opcao){
 
 String dinamica e consertada
 break; e continue;
-Operadores Unarios e Compostos;
+Operadores Unarios e Compostos; ++ -- += -= /= *=
 
 matrizes com zero fill
 inicializar variaveis dentro do FOR,
+
+EXTRAS:
+Inferência de Tipos - Var x = 30;
+SQRT(n);
+Potenciação: N ** Y
+foreach ( tipo X in )

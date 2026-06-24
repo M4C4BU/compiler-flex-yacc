@@ -17,11 +17,11 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 
 %%
 
-[ \t\r]+      
+[ \t\r]+
 \n          { linha++;}
 
 "//".*
-"/*"([^*]|\*+[^*/])*\*+"/" 
+"/*"([^*]|\*+[^*/])*\*+"/"
 
 "int"       { return INT; }
 "float"     { return FLOAT_TYPE; }
@@ -29,14 +29,19 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 "double"    { return DOUBLE; }
 "bool"      { return BOOL_TYPE; }
 "string"    { return STRING; }
+"void"      { return VOID_TYPE; }
+"var"       { return VAR; }
 
 "print"     { return PRINT; }
-"println"     { return PRINTLN; }
+"println"   { return PRINTLN; }
 "scan"      { return SCAN; }
+"sqrt"      { return SQRT; }
 
 "if"        { return IF; }
 "else"      { return ELSE; }
 "for"       { return FOR; }
+"foreach"   { return FOREACH; }
+"in"        { return IN; }
 "while"     { return WHILE; }
 "do"        { return DO; }
 "return"    { return RETURN; }
@@ -60,6 +65,7 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 "--"        { return DEC; }
 "+="        { return PLUS_EQ; }
 "-="        { return MINUS_EQ; }
+"**"        { return POW; }
 "*="        { return MUL_EQ; }
 "/="        { return DIV_EQ; }
 "%="        { return MOD_EQ; }

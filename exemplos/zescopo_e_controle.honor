@@ -1,0 +1,45 @@
+// escopo: x interno nao vaza pra fora
+int x = 10;
+{
+    int x = 99;
+    println(x);
+}
+println(x);
+
+// break e continue
+int soma = 0;
+for (var i = 1; i <= 10; i++) {
+    if (i % 2 == 0) { continue; }
+    if (i > 7)      { break; }
+    soma = soma + i;
+}
+println(soma);
+
+// while aninhado
+int a = 0;
+int b = 0;
+while (a < 3) {
+    b = 0;
+    while (b < 3) {
+        b = b + 1;
+    }
+    a = a + 1;
+}
+println(a);
+println(b);
+
+// do-while
+int c = 10;
+do {
+    c = c - 3;
+} while (c > 0);
+println(c);
+
+// switch
+for (var k = 1; k <= 3; k++) {
+    switch (k) {
+        case 1: println("um");
+        case 2: println("dois");
+        case 3: println("tres");
+    }
+}

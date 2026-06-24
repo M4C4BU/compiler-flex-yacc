@@ -1,0 +1,10 @@
+string a = "Bom";
+string b = "dia";
+string c = a + ", " + b + "!";
+println(c);
+
+string rep = "";
+for (var i = 0; i < 3; i++) {
+    rep += "bora ";
+}
+println(rep);

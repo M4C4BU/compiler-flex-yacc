@@ -1,0 +1,35 @@
+// Funcao simples
+int quadrado(int n) {
+    return n * n;
+}
+
+// Recursao - fatorial
+int fatorial(float n) {
+    if (n <= 1) { return 1; }
+    return n * fatorial(n - 1);
+}
+
+// Funcao void
+void tracinhos() {
+    println("--------");
+}
+
+// Funcao com string
+string saudar(string nome) {
+    return "Salve, " + nome + "!";
+}
+
+// Funcao com float
+float media(float a, float b, float c) {
+    return (a + b + c) / 3.0;
+}
+
+println(quadrado(8));
+println(fatorial(6.0));
+tracinhos();
+println(saudar("Carlos"));
+println(media(7, 8, 9.0));
+
+// Usando resultado de funcao em expressao
+int dobro = quadrado(3) * 2;
+println(dobro);

@@ -1,0 +1,17 @@
+// Array 1D com foreach
+int nums[5] = {10, 20, 30, 40, 50};
+
+int soma = 0;
+foreach (var x in nums) {
+    soma = soma + x;
+}
+println(soma);
+
+// Matriz 2D 3x3 identidade
+int m[3][3] = {{1,0,0},{0,1,0},{0,0,1}};
+int traco = m[0][0] + m[1][1] + m[2][2];
+println(traco);
+
+// Acesso e modificacao de matriz
+m[1][1] = 9;
+println(m[1][1]);

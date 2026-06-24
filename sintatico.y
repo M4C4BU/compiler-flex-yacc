@@ -10,10 +10,18 @@ using namespace std;
 
 int var_temp_qnt = 0;
 int label_qnt = 0;
-struct TempVar { string nome; string tipo; int array_size = 0; };
+struct TempVar { string nome; string tipo; int array_size = 0; bool is_param = false; };
 vector<TempVar> temporarios;
 int linha = 1;
 string codigo_gerado;
+
+struct FuncParam { string tipo; string nome_temp; };
+struct FuncInfo  { string tipo_retorno; vector<FuncParam> params; };
+map<string, FuncInfo> tabela_funcoes;
+string funcoes_geradas     = "";
+string tipo_retorno_atual  = "";
+vector<TempVar> temporarios_salvos;
+int var_temp_qnt_salvo = 0;
 
 struct InitElem { string label; string code; string tipo; };
 vector<vector<InitElem>> g_init_matrix;
@@ -44,12 +52,38 @@ vector<string> switch_tipo_stack;
 vector<string> stack_fim;
 vector<string> stack_continue;
 
+// Pilha de argumentos de chamada: cada '(' de funcao empurra um vetor novo.
+// Cada argumento se registra la; a chamada usa e desempurra.
+vector<vector<pair<string,string>>> g_args_stack;
+
 // Funções
 int yylex(void);
 void yyerror(string);
 string gentempcode(string tipo);
 string gentemparray(string tipo, int size);
 string declaraTemp();
+
+// TAC: dest = malloc(contar_chars(s) + 1)
+string tac_alloc_copy(string s, string dest) {
+    string t1 = gentempcode("int");
+    string t2 = gentempcode("int");
+    return "\t" + t1 + " = contar_chars(" + s + ");\n"
+         + "\t" + t2 + " = " + t1 + " + 1;\n"
+         + "\t" + dest + " = malloc(" + t2 + ");\n";
+}
+
+// TAC: dest = malloc(contar_chars(s1) + contar_chars(s2) + 1)
+string tac_alloc_concat(string s1, string s2, string dest) {
+    string t1 = gentempcode("int");
+    string t2 = gentempcode("int");
+    string t3 = gentempcode("int");
+    string t4 = gentempcode("int");
+    return "\t" + t1 + " = contar_chars(" + s1 + ");\n"
+         + "\t" + t2 + " = contar_chars(" + s2 + ");\n"
+         + "\t" + t3 + " = " + t1 + " + " + t2 + ";\n"
+         + "\t" + t4 + " = " + t3 + " + 1;\n"
+         + "\t" + dest + " = malloc(" + t4 + ");\n";
+}
 
 // Funções auxiliares para buscar variáveis na pilha de escopos
 bool declarada_no_escopo_atual(string id) {
@@ -117,15 +151,43 @@ string maior_tipo(string t1, string t2) {
 
 string converter(string origem, string destino, string label, string &novas_instrucoes) {
     if (origem == destino) return label;
-    
+
     // garante nao converter bools
     if (origem == "bool" || destino == "bool") {
         return "ERRO_TIPO";
     }
-    
+
     string temp = gentempcode(destino);
     novas_instrucoes += "\t" + temp + " = (" + destino + ") " + label + ";\n";
     return temp;
+}
+
+// Converte os argumentos de uma chamada para os tipos esperados pelos parametros.
+// Usa e desempurra o topo de g_args_stack. Retorna o codigo de conversao e
+// atualiza new_labels com os labels ja convertidos.
+string converter_args(const string &nome_func, const FuncInfo &fi,
+                      const string &labels_orig, string &new_labels) {
+    string conv_code = "";
+    auto &call_args = g_args_stack.back();
+    if (!fi.params.empty() && call_args.size() == fi.params.size()) {
+        new_labels = "";
+        for (int i = 0; i < (int)fi.params.size(); i++) {
+            string conv = "";
+            string lf = converter(call_args[i].second, fi.params[i].tipo,
+                                  call_args[i].first, conv);
+            if (lf == "ERRO_TIPO")
+                yyerror("Argumento " + to_string(i+1) + " de '" + nome_func +
+                        "': nao e possivel converter '" + call_args[i].second +
+                        "' para '" + fi.params[i].tipo + "'.");
+            conv_code += conv;
+            if (i > 0) new_labels += ", ";
+            new_labels += lf;
+        }
+    } else {
+        new_labels = labels_orig;
+    }
+    g_args_stack.pop_back();
+    return conv_code;
 }
 
 atributos op_aritmetico(atributos e1, atributos e2, string op) {
@@ -166,7 +228,7 @@ string atribuir_string(string destino, atributos origem) {
     if (origem.kind == "temp") {
         cod += "\t" + destino + " = " + origem.label + ";\n";
     } else {
-        cod += "\t" + destino + " = malloc(contar_chars(" + origem.label + ") + 1);\n";
+        cod += tac_alloc_copy(origem.label, destino);
         cod += "\tstrcpy(" + destino + ", " + origem.label + ");\n";
     }
     return cod;
@@ -176,7 +238,8 @@ string montar_programa(string traducao_interna) {
     string prog = "/*Compilador FOCA*/\n"
                   "#include <stdio.h>\n"
                   "#include <string.h>\n"
-                  "#include <stdlib.h>\n\n"
+                  "#include <stdlib.h>\n"
+                  "#include <math.h>\n\n"
                   "int contar_chars(char* s){\n"
                   "\tint i = 0;\n"
                   "\tchar t0;\n"
@@ -189,19 +252,22 @@ string montar_programa(string traducao_interna) {
                   "\tgoto L_cc_loop;\n"
                   "\tL_cc_fim:\n"
                   "\treturn i;\n"
-                  "}\n\n"
-                  "int main(void) {\n";
-                  
+                  "}\n\n";
+
+    prog += funcoes_geradas;
+
+    prog += "int main(void) {\n";
     prog += declaraTemp();
-    
+
     prog += "\n" + traducao_interna + "\treturn 0;\n}\n";
     return prog;
 }
 %}
 
 %token TK_NUM TK_FLOAT TK_ID TK_CHAR TK_STRING
-%token INT FLOAT_TYPE CHAR DOUBLE BOOL_TYPE STRING
-%token FOR WHILE DO RETURN CONTINUE
+%token INT FLOAT_TYPE CHAR DOUBLE BOOL_TYPE STRING VOID_TYPE VAR
+%token FOR FOREACH IN WHILE DO RETURN CONTINUE
+%token POW SQRT
 %token EQ NE LE GE
 %token AND OR TK_BOOL
 %token NOT
@@ -218,6 +284,7 @@ string montar_programa(string traducao_interna) {
 %left '<' '>' LE GE
 %left '+' '-'
 %left '*' '/' '%'
+%right POW
 %right NOT
 %right PREC_CAST
 %right UMINUS UPLUS
@@ -225,11 +292,188 @@ string montar_programa(string traducao_interna) {
 
 %%
 
-S           : E        { codigo_gerado = montar_programa($1.traducao); }
-            | COMANDOS { codigo_gerado = montar_programa($1.traducao); }
+/* programa123 */
+S           : ITENS { codigo_gerado = montar_programa($1.traducao); }
             ;
 
-BLOCO_INICIO : '{' { pilha_tabelas.push_back(map<string, Simbolo>()); } 
+/* itens_programa123 */
+ITENS       : /* empty */
+            { $$.traducao = ""; }
+            | ITENS FUNC_DECL
+            { $$.traducao = $1.traducao; }
+            | ITENS COMANDO
+            { $$.traducao = $1.traducao + $2.traducao; }
+            ;
+
+/* cabecalho_funcao123 */
+/* Cabecalho da funcao: consome TIPO TK_ID '(' (ou void TK_ID '(') e configura ambiente.
+   Usar TIPO diretamente (nao via nonterminal extra) evita conflito sr com DECL -> TIPO TK_ID,
+   pois apos TIPO TK_ID o lookahead '(' nao esta em FOLLOW(DECL)={';'}. */
+FUNC_INIT   : TIPO TK_ID '('
+            {
+                temporarios_salvos = temporarios;
+                var_temp_qnt_salvo = var_temp_qnt;
+                temporarios.clear();
+                var_temp_qnt = 0;
+                pilha_tabelas.push_back(map<string, Simbolo>());
+                tipo_retorno_atual = $1.tipo;
+                $$.tipo  = $1.tipo;
+                $$.label = $2.label;
+            }
+            | VOID_TYPE TK_ID '('
+            {
+                temporarios_salvos = temporarios;
+                var_temp_qnt_salvo = var_temp_qnt;
+                temporarios.clear();
+                var_temp_qnt = 0;
+                pilha_tabelas.push_back(map<string, Simbolo>());
+                tipo_retorno_atual = "void";
+                $$.tipo  = "void";
+                $$.label = $2.label;
+            }
+            ;
+
+/* declaracao_funcao123 */
+FUNC_DECL   : FUNC_INIT PARAMS ')'
+            {
+                /* pre-registra a funcao para permitir recursao */
+                FuncInfo fi; fi.tipo_retorno = $1.tipo;
+                for (auto &p : temporarios)
+                    if (p.is_param) fi.params.push_back({p.tipo, p.nome});
+                tabela_funcoes[$1.label] = fi;
+            }
+            BLOCO
+            {
+                /* $1=FUNC_INIT  $2=PARAMS  $3=')'  $4=MRA  $5=BLOCO */
+                string ctype_ret = ($1.tipo == "void")   ? "void"  :
+                                   ($1.tipo == "bool")   ? "int"   :
+                                   ($1.tipo == "string") ? "char*" : $1.tipo;
+
+                string func_temps = declaraTemp();
+                funcoes_geradas += ctype_ret + " " + $1.label + "(" + $2.traducao + ") {\n";
+                if (!func_temps.empty()) funcoes_geradas += func_temps + "\n";
+                funcoes_geradas += $5.traducao;
+                funcoes_geradas += "}\n\n";
+
+                temporarios       = temporarios_salvos;
+                var_temp_qnt      = var_temp_qnt_salvo;
+                pilha_tabelas.pop_back();
+                tipo_retorno_atual = "";
+                $$.traducao = "";
+            }
+            ;
+
+/* parametros_funcao123 */
+PARAMS      : PARAM_LIST { $$.traducao = $1.traducao; }
+            | /* empty */ { $$.traducao = ""; }
+            ;
+
+PARAM_LIST  : TIPO TK_ID
+            {
+                if (declarada_no_escopo_atual($2.label))
+                    yyerror("Parametro ja declarado: " + $2.label);
+                string temp_id = gentempcode($1.tipo);
+                temporarios.back().is_param = true;
+                inserir_simbolo($2.label, $1.tipo, temp_id);
+                string ctype = ($1.tipo == "bool")   ? "int"   :
+                               ($1.tipo == "string") ? "char*" : $1.tipo;
+                $$.traducao = ctype + " " + temp_id;
+            }
+            | PARAM_LIST ',' TIPO TK_ID
+            {
+                if (declarada_no_escopo_atual($4.label))
+                    yyerror("Parametro ja declarado: " + $4.label);
+                string temp_id = gentempcode($3.tipo);
+                temporarios.back().is_param = true;
+                inserir_simbolo($4.label, $3.tipo, temp_id);
+                string ctype = ($3.tipo == "bool")   ? "int"   :
+                               ($3.tipo == "string") ? "char*" : $3.tipo;
+                $$.traducao = $1.traducao + ", " + ctype + " " + temp_id;
+            }
+            ;
+
+/* cabecalho_foreach123 */
+/* Cabecalho do foreach: valida array, cria temps, empurra labels.
+   Usa atributos para passar estado ao COMANDO:
+     label    = elem_temp   (variavel C do elemento)
+     arr_id   = idx_temp    (variavel C do indice)
+     arr_temp = arr.temp    (variavel C do array)
+     ndim     = tamanho total do array
+     traducao = l_inicio    (label do inicio do loop) */
+FOREACH_HEADER : FOREACH '(' TIPO TK_ID IN TK_ID ')'
+               {
+                   // $3=TIPO $4=elem_id $5=IN $6=arr_id
+                   if (!declarada($6.label))
+                       yyerror("Variavel nao declarada: " + $6.label);
+                   Simbolo arr = obter_simbolo($6.label);
+                   if (arr.dims.empty())
+                       yyerror("'" + $6.label + "' nao e um array.");
+                   if (arr.dims.size() != 1)
+                       yyerror("foreach suporta apenas arrays 1D; use for aninhado para matrizes.");
+
+                   if (declarada_no_escopo_atual($4.label))
+                       yyerror("Variavel ja declarada neste escopo: " + $4.label);
+
+                   if ($3.tipo != arr.tipo)
+                       yyerror("Tipo do elemento incompativel com o array: array e de '"
+                               + arr.tipo + "', mas foi declarado '" + $3.tipo + "'.");
+
+                   pilha_tabelas.push_back(map<string, Simbolo>());
+
+                   string elem_temp = gentempcode($3.tipo);
+                   string idx_temp  = gentempcode("int");
+                   inserir_simbolo($4.label, $3.tipo, elem_temp);
+
+                   string l_inicio     = gen_label();
+                   string l_fim        = gen_label();
+                   string l_incremento = gen_label();
+                   stack_continue.push_back(l_incremento);
+                   stack_fim.push_back(l_fim);
+
+                   $$.label    = elem_temp;
+                   $$.arr_id   = idx_temp;
+                   $$.arr_temp = arr.temp;
+                   $$.ndim     = arr.dims[0];
+                   $$.tipo     = $3.tipo;
+                   $$.traducao = l_inicio;
+               }
+               | FOREACH '(' VAR TK_ID IN TK_ID ')'
+               {
+                   // var: infere tipo do elemento a partir do array
+                   if (!declarada($6.label))
+                       yyerror("Variavel nao declarada: " + $6.label);
+                   Simbolo arr = obter_simbolo($6.label);
+                   if (arr.dims.empty())
+                       yyerror("'" + $6.label + "' nao e um array.");
+                   if (arr.dims.size() != 1)
+                       yyerror("foreach suporta apenas arrays 1D; use for aninhado para matrizes.");
+
+                   if (declarada_no_escopo_atual($4.label))
+                       yyerror("Variavel ja declarada neste escopo: " + $4.label);
+
+                   pilha_tabelas.push_back(map<string, Simbolo>());
+
+                   string elem_temp = gentempcode(arr.tipo);
+                   string idx_temp  = gentempcode("int");
+                   inserir_simbolo($4.label, arr.tipo, elem_temp);
+
+                   string l_inicio     = gen_label();
+                   string l_fim        = gen_label();
+                   string l_incremento = gen_label();
+                   stack_continue.push_back(l_incremento);
+                   stack_fim.push_back(l_fim);
+
+                   $$.label    = elem_temp;
+                   $$.arr_id   = idx_temp;
+                   $$.arr_temp = arr.temp;
+                   $$.ndim     = arr.dims[0];
+                   $$.tipo     = arr.tipo;
+                   $$.traducao = l_inicio;
+               }
+               ;
+
+/* bloco123 */
+BLOCO_INICIO : '{' { pilha_tabelas.push_back(map<string, Simbolo>()); }
              ;
 
 BLOCO_FIM    : '}' 
@@ -251,6 +495,7 @@ BLOCO        : BLOCO_INICIO COMANDOS BLOCO_FIM  {$$.traducao = $2.traducao + $3.
              | BLOCO_INICIO BLOCO_FIM {$$.traducao = $2.traducao; }
              ;
 
+/* lista_comandos123 */
 COMANDOS    : COMANDO COMANDOS
             {
                 $$.traducao = $1.traducao + $2.traducao;
@@ -261,6 +506,7 @@ COMANDOS    : COMANDO COMANDOS
             }
             ;
 
+/* comando123 */
 COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
             | LARRAY '=' E ';'
             {
@@ -372,33 +618,60 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                                 "\tif(" + $6.label + ") goto " + l_inicio + ";\n" +
                                 "\t" + l_fim + ":\n";
               }
-            | FOR '(' FOR_INIT ';' OPT_E ';' OPT_ATRIB_FOR ')'
+            | FOR '(' { pilha_tabelas.push_back(map<string, Simbolo>()); }
+                FOR_INIT ';' OPT_E ';' OPT_ATRIB_FOR ')'
               {
-                  stack_continue.push_back(gen_label()); 
-                  stack_fim.push_back(gen_label());      
+                  // $3=MRA $4=FOR_INIT $5=';' $6=OPT_E $7=';' $8=OPT_ATRIB_FOR $9=')'
+                  stack_continue.push_back(gen_label());
+                  stack_fim.push_back(gen_label());
               }
               BLOCO
               {
-                  if ($5.tipo != "bool") yyerror("Condicao do for deve ser bool");
+                  if ($6.tipo != "bool") yyerror("Condicao do for deve ser bool");
 
                   string l_incremento = stack_continue.back(); stack_continue.pop_back();
                   string l_fim = stack_fim.back(); stack_fim.pop_back();
-                  string l_inicio = gen_label(); 
+                  string l_inicio = gen_label();
 
-                  // $3 = Inicializacao opcional 1 
-                  // $5 = Condicao opcional 2 
-                  // $7 = Incremento opcional 3 
-                  // $10 = Bloco de codigo {}
+                  pilha_tabelas.pop_back(); // escopo do for-init
 
-                  $$.traducao = $3.traducao +
+                  $$.traducao = $4.traducao +
                                 "\t" + l_inicio + ":\n" +
-                                $5.traducao +
-                                "\tif(!" + $5.label + ") goto " + l_fim + ";\n" +
-                                $10.traducao +
+                                $6.traducao +
+                                "\tif(!" + $6.label + ") goto " + l_fim + ";\n" +
+                                $11.traducao +
                                 "\t" + l_incremento + ":\n" +
-                                $7.traducao +
+                                $8.traducao +
                                 "\tgoto " + l_inicio + ";\n" +
                                 "\t" + l_fim + ":\n";
+              }
+            | FOREACH_HEADER BLOCO
+              {
+                  // $1=FOREACH_HEADER  $2=BLOCO
+                  string l_incremento = stack_continue.back(); stack_continue.pop_back();
+                  string l_fim        = stack_fim.back();       stack_fim.pop_back();
+                  string l_inicio     = $1.traducao;
+                  string elem_temp    = $1.label;
+                  string idx_temp     = $1.arr_id;
+                  string arr_c        = $1.arr_temp;
+                  int    size         = $1.ndim;
+
+                  string t_cond     = gentempcode("bool");
+                  string assign_elem = "\t" + elem_temp + " = " + arr_c + "[" + idx_temp + "];\n";
+
+                  pilha_tabelas.pop_back(); // escopo do elemento (empurrado em FOREACH_HEADER)
+
+                  $$.traducao =
+                      "\t" + idx_temp + " = 0;\n" +
+                      "\t" + l_inicio + ":\n" +
+                      "\t" + t_cond + " = " + idx_temp + " < " + to_string(size) + ";\n" +
+                      "\tif(!" + t_cond + ") goto " + l_fim + ";\n" +
+                      assign_elem +
+                      $2.traducao +
+                      "\t" + l_incremento + ":\n" +
+                      "\t" + idx_temp + " = " + idx_temp + " + 1;\n" +
+                      "\tgoto " + l_inicio + ";\n" +
+                      "\t" + l_fim + ":\n";
               }
             | CONTINUE ';'
               {
@@ -408,6 +681,39 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                   // Pula para a etiqueta de continuacao mais proxima da pilha
                   $$.traducao = "\tgoto " + stack_continue.back() + ";\n";
               }
+            | RETURN E ';'
+            {
+                if (tipo_retorno_atual == "")
+                    yyerror("'return' fora de funcao.");
+                if (tipo_retorno_atual == "void")
+                    yyerror("Funcao void nao pode retornar um valor.");
+                string conv = "";
+                string lf = converter($2.tipo, tipo_retorno_atual, $2.label, conv);
+                if (lf == "ERRO_TIPO")
+                    yyerror("Tipo de retorno incompativel com o declarado.");
+                $$.traducao = $2.traducao + conv + "\treturn " + lf + ";\n";
+            }
+            | RETURN ';'
+            {
+                if (tipo_retorno_atual == "")
+                    yyerror("'return' fora de funcao.");
+                $$.traducao = "\treturn;\n";
+            }
+            | TK_ID '(' { g_args_stack.push_back({}); } ARGS ')' ';'
+            {
+                // $1=TK_ID $2='(' $3=MRA $4=ARGS $5=')' $6=';'
+                if (tabela_funcoes.find($1.label) == tabela_funcoes.end())
+                    yyerror("Funcao nao declarada: " + $1.label);
+                FuncInfo fi = tabela_funcoes[$1.label];
+                string new_labels;
+                string conv_code = converter_args($1.label, fi, $4.label, new_labels);
+                if (fi.tipo_retorno == "void") {
+                    $$.traducao = $4.traducao + conv_code + "\t" + $1.label + "(" + new_labels + ");\n";
+                } else {
+                    string t = gentempcode(fi.tipo_retorno);
+                    $$.traducao = $4.traducao + conv_code + "\t" + t + " = " + $1.label + "(" + new_labels + ");\n";
+                }
+            }
             | TK_ID '=' E ';'
             {
                 if(!declarada($1.label)) {
@@ -479,7 +785,7 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                     if($3.tipo != "string") yyerror("Concatenacao += exige duas strings.");
                     string t_new = gentempcode("string");
                     string cod = $3.traducao;
-                    cod += "\t" + t_new + " = malloc(contar_chars(" + var.temp + ") + contar_chars(" + $3.label + ") + 1);\n";
+                    cod += tac_alloc_concat(var.temp, $3.label, t_new);
                     cod += "\tstrcpy(" + t_new + ", " + var.temp + ");\n";
                     cod += "\tstrcat(" + t_new + ", " + $3.label + ");\n";
                     if($3.kind == "temp") cod += "\tfree(" + $3.label + ");\n";
@@ -552,6 +858,7 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
             }
             ;
 
+/* argumentos_print123 */
 ARGS_PRINT  : ARGS_PRINT ',' E
             {
                 string liberar = ($3.tipo == "string" && $3.kind == "temp")
@@ -572,6 +879,7 @@ ARGS_PRINT  : ARGS_PRINT ',' E
             }
             ;
 
+/* argumentos_scan123 */
 ARGS_SCAN   : ARGS_SCAN ',' TK_ID
             {
                 if(!declarada($3.label)) {
@@ -629,6 +937,7 @@ ARGS_SCAN   : ARGS_SCAN ',' TK_ID
                 }
             }
             ;
+/* switch_cases123 */
 CASOS   :   LISTA_CASES
             {
                 $$.traducao = $1.traducao;
@@ -639,6 +948,7 @@ CASOS   :   LISTA_CASES
                 $$.traducao = $1.traducao + $4.traducao;
             }
             ;
+/* auxiliares_for123 */
 ATRIB_FOR   : TK_ID '=' E
             {
                 if(!declarada($1.label)) {
@@ -697,7 +1007,7 @@ ATRIB_FOR   : TK_ID '=' E
                     if($3.tipo != "string") yyerror("Concatenacao += exige duas strings.");
                     string t_new = gentempcode("string");
                     string cod = $3.traducao;
-                    cod += "\t" + t_new + " = malloc(contar_chars(" + var.temp + ") + contar_chars(" + $3.label + ") + 1);\n";
+                    cod += tac_alloc_concat(var.temp, $3.label, t_new);
                     cod += "\tstrcpy(" + t_new + ", " + var.temp + ");\n";
                     cod += "\tstrcat(" + t_new + ", " + $3.label + ");\n";
                     if($3.kind == "temp") cod += "\tfree(" + $3.label + ");\n";
@@ -817,6 +1127,7 @@ CASO_NORMAL:CASE E ':' COMANDOS
             ;
 
 
+/* declaracao123 */
 DECL        : TIPO TK_ID
             {
                 if(declarada_no_escopo_atual($2.label))
@@ -839,6 +1150,19 @@ DECL        : TIPO TK_ID
                     string label_final = converter($4.tipo, tipo_id, $4.label, conversoes);
                     if (label_final == "ERRO_TIPO") yyerror("Tipos incompativeis: nao e possivel converter para bool.");
                     $$.traducao = $4.traducao + conversoes + "\t" + temp_id + " = " + label_final + ";\n";
+                }
+            }
+            | VAR TK_ID '=' E
+            {
+                if (declarada_no_escopo_atual($2.label))
+                    yyerror("Variavel ja declarada neste escopo: " + $2.label);
+                string tipo_inf = $4.tipo;
+                string temp_id  = gentempcode(tipo_inf);
+                inserir_simbolo($2.label, tipo_inf, temp_id);
+                if (tipo_inf == "string") {
+                    $$.traducao = atribuir_string(temp_id, $4);
+                } else {
+                    $$.traducao = $4.traducao + "\t" + temp_id + " = " + $4.label + ";\n";
                 }
             }
             | TIPO TK_ID DIMS
@@ -912,19 +1236,20 @@ DECL        : TIPO TK_ID
             }
             ;
 
+/* tipos123 */
 TIPO        : INT {$$.tipo = "int";}
             | FLOAT_TYPE{ $$.tipo = "float";}
             | CHAR {$$.tipo = "char";}
             | BOOL_TYPE {$$.tipo = "bool";}
             | STRING {$$.tipo = "string";}
             ;
-/* Dimensoes */
+/* dimensoes123 */
 DIMS        : '[' TK_NUM ']'
             { $$.dims = { stoi($2.label) }; $$.traducao = ""; }
             | DIMS '[' TK_NUM ']'
             { $$.dims = $1.dims; $$.dims.push_back(stoi($3.label)); $$.traducao = ""; }
             ;
-/* Elist */
+/* acesso_array123 */
 ELIST       : TK_ID '[' E
             {
                 if (!declarada($1.label))
@@ -959,6 +1284,7 @@ ELIST       : TK_ID '[' E
             }
             ;
 
+/* lvalue_array123 */
 LARRAY      : ELIST ']'
             {
                 Simbolo arr = obter_simbolo($1.arr_id);
@@ -975,8 +1301,7 @@ LARRAY      : ELIST ']'
             }
             ;
 
-/* Inicializadores de array */
-
+/* inicializadores_array123 */
 FLAT_LIST   : E
             {
                 g_init_matrix.clear();
@@ -1015,7 +1340,30 @@ NESTED_LIST : INIT_NESTED_START '{' NEW_ROW ROW_LIST '}'
 INIT_OUTER  : FLAT_LIST   { $$.kind = "flat";   $$.label = $1.label; }
             | NESTED_LIST  { $$.kind = "nested"; $$.label = $1.label; }
             ;
-E           : E '+' E    
+
+/* argumentos_chamada123 */
+ARGS        : ARG_LIST   { $$.traducao = $1.traducao; $$.label = $1.label; }
+            | /* empty */ { $$.traducao = ""; $$.label = ""; }
+            ;
+
+ARG_LIST    : E
+            {
+                if (!g_args_stack.empty())
+                    g_args_stack.back().push_back({$1.label, $1.tipo});
+                $$.traducao = $1.traducao;
+                $$.label    = $1.label;
+            }
+            | ARG_LIST ',' E
+            {
+                if (!g_args_stack.empty())
+                    g_args_stack.back().push_back({$3.label, $3.tipo});
+                $$.traducao = $1.traducao + $3.traducao;
+                $$.label    = $1.label + ", " + $3.label;
+            }
+            ;
+
+/* expressoes123 */
+E           : E '+' E
             {
                 if($1.tipo == "string" && $3.tipo == "string"){
                     $$.tipo = "string";
@@ -1026,8 +1374,7 @@ E           : E '+' E
 
                     // Um malloc do tamanho exato (sem strlen: usa contar_chars) +
                     // um strcpy + um strcat. Sem buffers desperdicados.
-                    cod += "\t" + $$.label + " = malloc(contar_chars(" + $1.label +
-                           ") + contar_chars(" + $3.label + ") + 1);\n";
+                    cod += tac_alloc_concat($1.label, $3.label, $$.label);
                     cod += "\tstrcpy(" + $$.label + ", " + $1.label + ");\n";
                     cod += "\tstrcat(" + $$.label + ", " + $3.label + ");\n";
 
@@ -1289,6 +1636,52 @@ E           : E '+' E
                 $$.traducao = $1.traducao +
                               "\t" + t + " = " + $1.arr_temp + "[" + $1.label + "];\n";
             }
+            | E POW E
+            {
+                if ($1.tipo == "string" || $1.tipo == "bool" || $1.tipo == "char" ||
+                    $3.tipo == "string" || $3.tipo == "bool" || $3.tipo == "char")
+                    yyerror("Operador ** requer operandos numericos (int ou float), recebeu '"
+                            + $1.tipo + "' e '" + $3.tipo + "'.");
+                string conv1 = "", conv2 = "";
+                string l1 = converter($1.tipo, "float", $1.label, conv1);
+                string l2 = converter($3.tipo, "float", $3.label, conv2);
+                string t  = gentempcode("float");
+                $$.tipo     = "float";
+                $$.label    = t;
+                $$.kind     = "";
+                $$.traducao = $1.traducao + $3.traducao + conv1 + conv2 +
+                              "\t" + t + " = pow(" + l1 + ", " + l2 + ");\n";
+            }
+            | SQRT '(' E ')'
+            {
+                if ($3.tipo == "string" || $3.tipo == "bool" || $3.tipo == "char")
+                    yyerror("sqrt requer operando numerico (int ou float), recebeu '"
+                            + $3.tipo + "'.");
+                string conv = "";
+                string l = converter($3.tipo, "float", $3.label, conv);
+                string t = gentempcode("float");
+                $$.tipo     = "float";
+                $$.label    = t;
+                $$.kind     = "";
+                $$.traducao = $3.traducao + conv +
+                              "\t" + t + " = sqrt(" + l + ");\n";
+            }
+            | TK_ID '(' { g_args_stack.push_back({}); } ARGS ')'
+            {
+                // $1=TK_ID $2='(' $3=MRA $4=ARGS $5=')'
+                if (tabela_funcoes.find($1.label) == tabela_funcoes.end())
+                    yyerror("Funcao nao declarada: " + $1.label);
+                FuncInfo fi = tabela_funcoes[$1.label];
+                if (fi.tipo_retorno == "void")
+                    yyerror("Funcao void nao pode ser usada em expressao; use como statement.");
+                string new_labels;
+                string conv_code = converter_args($1.label, fi, $4.label, new_labels);
+                string t = gentempcode(fi.tipo_retorno);
+                $$.tipo     = fi.tipo_retorno;
+                $$.label    = t;
+                $$.kind     = (fi.tipo_retorno == "string") ? "temp" : "";
+                $$.traducao = $4.traducao + conv_code + "\t" + t + " = " + $1.label + "(" + new_labels + ");\n";
+            }
             ;
 
 %%
@@ -1301,6 +1694,7 @@ string declaraTemp(){
     string s;
 
     for (auto &t : temporarios) {
+        if (t.is_param) continue; // ja declarado como parametro C da funcao
         if (t.array_size > 0) {
             string ctype = (t.tipo == "bool") ? "int" : t.tipo;
             s += "\t" + ctype + " " + t.nome + "[" + to_string(t.array_size) + "] = {0};\n";
