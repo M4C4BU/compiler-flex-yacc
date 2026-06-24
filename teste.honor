@@ -1,3 +1,4 @@
 for(int i = 0;i<2;i++){
-    println("super teste");
+    string a = "super teste"; 
+    println(a);
 }

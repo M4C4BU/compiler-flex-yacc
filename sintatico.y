@@ -179,8 +179,12 @@ string montar_programa(string traducao_interna) {
                   "#include <stdlib.h>\n\n"
                   "int contar_chars(char* s){\n"
                   "\tint i = 0;\n"
+                  "\tchar t0;\n"
+                  "\tint t1;\n"
                   "\tL_cc_loop:\n"
-                  "\tif(s[i] == '\\0') goto L_cc_fim;\n"
+                  "\tt0 = s[i];\n"
+                  "\tt1 = t0 == '\\0';\n"
+                  "\tif(t1) goto L_cc_fim;\n"
                   "\ti = i + 1;\n"
                   "\tgoto L_cc_loop;\n"
                   "\tL_cc_fim:\n"
@@ -432,30 +436,6 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
 
                     $$.traducao = $3.traducao + conversoes +
                                   "\t" + var.temp + " = " + label_final + ";\n";
-                }
-            }
-            | TK_ID '=' E
-            {
-                // Lida com declaracoes implicitas e sem ponto-e-virgula
-                if(!declarada($1.label)) {
-                    inserir_simbolo($1.label, $3.tipo, "");
-                }
-
-                Simbolo var = obter_simbolo($1.label);
-
-                if(var.temp == "") {
-                    var.temp = gentempcode(var.tipo);
-                    atualizar_temp_simbolo($1.label, var.temp);
-                }
-
-                if(var.tipo == "string") {
-                    if ($3.tipo != "string") {
-                        yyerror("Tipos incompativeis: esperado uma string.");
-                    }
-                    $$.traducao = atribuir_string(var.temp, $3);
-                } else {
-                    $$.traducao = $3.traducao +
-                                  "\t" + var.temp + " = " + $3.label + ";\n";
                 }
             }
             | TK_ID INC ';'
