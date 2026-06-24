@@ -10,9 +10,13 @@ using namespace std;
 
 int var_temp_qnt = 0;
 int label_qnt = 0;
-vector<pair<string, string>> temporarios;
+struct TempVar { string nome; string tipo; int array_size = 0; };
+vector<TempVar> temporarios;
 int linha = 1;
 string codigo_gerado;
+
+struct InitElem { string label; string code; string tipo; };
+vector<vector<InitElem>> g_init_matrix;
 
 // Structs
 struct atributos
@@ -20,13 +24,17 @@ struct atributos
     string label;
     string traducao;
     string tipo;
-    string kind; // "lit" | "temp" | "var" -- so' relevante quando tipo == "string".
-                 // Define como o ownership do buffer de memoria deve ser tratado.
+    string kind;
+    string arr_id;   // identificador original do array
+    string arr_temp; // variavel C que representa o array (ex: "t5")
+    int    ndim = 0; // dimensoes acumuladas no Elist
+    vector<int> dims;// tamanhos das dimensoes (regra DIMS)
 };
 
 struct Simbolo {
     string tipo;
     string temp;
+    vector<int> dims; // vazio=escalar, {10}=1D, {3,4}=2D
 };
 
 // Pilha de escopos (Contexto)
@@ -40,6 +48,7 @@ vector<string> stack_continue;
 int yylex(void);
 void yyerror(string);
 string gentempcode(string tipo);
+string gentemparray(string tipo, int size);
 string declaraTemp();
 
 // Funções auxiliares para buscar variáveis na pilha de escopos
@@ -58,11 +67,17 @@ Simbolo obter_simbolo(string id) {
     for (int i = pilha_tabelas.size() - 1; i >= 0; i--) {
         if (pilha_tabelas[i].count(id) > 0) return pilha_tabelas[i][id];
     }
-    return Simbolo{"erro", ""};
+    Simbolo s; s.tipo = "erro"; return s;
 }
 
 void inserir_simbolo(string id, string tipo, string temp) {
-    pilha_tabelas.back()[id] = Simbolo{tipo, temp};
+    Simbolo s; s.tipo = tipo; s.temp = temp;
+    pilha_tabelas.back()[id] = s;
+}
+
+void inserir_simbolo_array(string id, string tipo, string temp, vector<int> dims) {
+    Simbolo s; s.tipo = tipo; s.temp = temp; s.dims = dims;
+    pilha_tabelas.back()[id] = s;
 }
 
 void atualizar_temp_simbolo(string id, string temp) {
@@ -144,27 +159,6 @@ atributos op_relacional(atributos e1, atributos e2, string op) {
                    "\t" + res.label + " = " + l1 + " " + op + " " + l2 + ";\n";
     return res;
 }
-
-// ---------------------------------------------------------------------------
-// Gerenciamento de memoria dinamica para strings
-// ---------------------------------------------------------------------------
-//
-// Toda variavel/temporario do tipo "string" e' um "char*" inicializado em
-// NULL (ver declaraTemp()). Isso permite que UMA UNICA regra cubra tanto a
-// primeira atribuicao quanto reatribuicoes:
-//
-//     if (destino) free(destino);   // nunca e' free em ponteiro lixo/NULL
-//     destino = ...;                 // novo valor
-//
-// O "kind" de quem esta' do lado direito decide como o novo valor e' obtido:
-//   - "temp": e' um buffer recem-alocado (ex.: resultado de concatenacao) que
-//             ninguem mais referencia -> a posse e' simplesmente transferida
-//             (sem malloc/strcpy extra).
-//   - "lit" ou "var": e' memoria que NAO pertence a essa atribuicao (um
-//             literal estatico ou o buffer de outra variavel) -> precisamos
-//             copiar para um buffer proprio, senao duas variaveis ficariam
-//             apontando para o mesmo bloco e um "free" de uma delas
-//             invalidaria a outra (double free / use-after-free).
 string atribuir_string(string destino, atributos origem) {
     string cod = origem.traducao;
     cod += "\tif(" + destino + ") free(" + destino + ");\n";
@@ -172,11 +166,7 @@ string atribuir_string(string destino, atributos origem) {
     if (origem.kind == "temp") {
         cod += "\t" + destino + " = " + origem.label + ";\n";
     } else {
-        string t_len  = gentempcode("int");
-        string t_size = gentempcode("int");
-        cod += "\t" + t_len  + " = contar_chars(" + origem.label + ");\n";
-        cod += "\t" + t_size + " = " + t_len + " + 1;\n";
-        cod += "\t" + destino + " = malloc(" + t_size + ");\n";
+        cod += "\t" + destino + " = malloc(contar_chars(" + origem.label + ") + 1);\n";
         cod += "\tstrcpy(" + destino + ", " + origem.label + ");\n";
     }
     return cod;
@@ -241,8 +231,6 @@ BLOCO_INICIO : '{' { pilha_tabelas.push_back(map<string, Simbolo>()); }
 BLOCO_FIM    : '}' 
              {
                  // Ao sair do escopo, libera qualquer string declarada dentro dele.
-                 // Essencial em laços (while/for/do): o bloco e' re-executado varias
-                 // vezes via goto, entao sem isso cada iteracao deixaria um leak.
                  string limpeza;
                  for (auto &par : pilha_tabelas.back()) {
                      if (par.second.tipo == "string" && par.second.temp != "") {
@@ -270,6 +258,17 @@ COMANDOS    : COMANDO COMANDOS
             ;
 
 COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
+            | LARRAY '=' E ';'
+            {
+                if ($3.tipo == "string")
+                    yyerror("Nao e possivel armazenar strings em arrays.");
+                string conv = "";
+                string lf = converter($3.tipo, $1.tipo, $3.label, conv);
+                if (lf == "ERRO_TIPO")
+                    yyerror("Tipo incompativel na atribuicao ao array '" + $1.arr_id + "'.");
+                $$.traducao = $1.traducao + $3.traducao + conv +
+                              "\t" + $1.arr_temp + "[" + $1.label + "] = " + lf + ";\n";
+            }
             | BLOCO { $$.traducao = $1.traducao; }
             | IF '(' E ')' BLOCO
             {
@@ -369,7 +368,7 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                                 "\tif(" + $6.label + ") goto " + l_inicio + ";\n" +
                                 "\t" + l_fim + ":\n";
               }
-            | FOR '(' OPT_ATRIB_FOR ';' OPT_E ';' OPT_ATRIB_FOR ')'
+            | FOR '(' FOR_INIT ';' OPT_E ';' OPT_ATRIB_FOR ')'
               {
                   stack_continue.push_back(gen_label()); 
                   stack_fim.push_back(gen_label());      
@@ -405,33 +404,6 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                   // Pula para a etiqueta de continuacao mais proxima da pilha
                   $$.traducao = "\tgoto " + stack_continue.back() + ";\n";
               }
-            | TIPO TK_ID '=' E ';'
-            {
-                if(declarada_no_escopo_atual($2.label)) {
-                    yyerror("Variavel ja declarada neste escopo");
-                }
-
-                string tipo_id = $1.tipo; 
-                string temp_id = gentempcode(tipo_id);
-                inserir_simbolo($2.label, tipo_id, temp_id);
-
-                if(tipo_id == "string") {
-                    if ($4.tipo != "string") {
-                        yyerror("Tipos incompativeis: esperado uma string.");
-                    }
-                    $$.traducao = atribuir_string(temp_id, $4);
-                } else {
-                    string conversoes = "";
-                    string label_final = converter($4.tipo, tipo_id, $4.label, conversoes);
-
-                    if (label_final == "ERRO_TIPO") {
-                        yyerror("Tipos incompativeis: nao e possivel converter para bool.");
-                    }
-
-                    $$.traducao = $4.traducao + conversoes +
-                                  "\t" + temp_id + " = " + label_final + ";\n";
-                }
-            }
             | TK_ID '=' E ';'
             {
                 if(!declarada($1.label)) {
@@ -525,17 +497,9 @@ COMANDO     : DECL ';' {$$.traducao = $1.traducao;}
                 if(var.tipo == "bool") yyerror("Operador += nao suportado para bool.");
                 if(var.tipo == "string") {
                     if($3.tipo != "string") yyerror("Concatenacao += exige duas strings.");
-                    string t_new  = gentempcode("string");
-                    string t_len1 = gentempcode("int");
-                    string t_len2 = gentempcode("int");
-                    string t_sum  = gentempcode("int");
-                    string t_size = gentempcode("int");
+                    string t_new = gentempcode("string");
                     string cod = $3.traducao;
-                    cod += "\t" + t_len1 + " = contar_chars(" + var.temp + ");\n";
-                    cod += "\t" + t_len2 + " = contar_chars(" + $3.label + ");\n";
-                    cod += "\t" + t_sum  + " = " + t_len1 + " + " + t_len2 + ";\n";
-                    cod += "\t" + t_size + " = " + t_sum  + " + 1;\n";
-                    cod += "\t" + t_new  + " = malloc(" + t_size + ");\n";
+                    cod += "\t" + t_new + " = malloc(contar_chars(" + var.temp + ") + contar_chars(" + $3.label + ") + 1);\n";
                     cod += "\tstrcpy(" + t_new + ", " + var.temp + ");\n";
                     cod += "\tstrcat(" + t_new + ", " + $3.label + ");\n";
                     if($3.kind == "temp") cod += "\tfree(" + $3.label + ");\n";
@@ -751,17 +715,9 @@ ATRIB_FOR   : TK_ID '=' E
                 if(var.tipo == "bool") yyerror("Operador += nao suportado para bool.");
                 if(var.tipo == "string") {
                     if($3.tipo != "string") yyerror("Concatenacao += exige duas strings.");
-                    string t_new  = gentempcode("string");
-                    string t_len1 = gentempcode("int");
-                    string t_len2 = gentempcode("int");
-                    string t_sum  = gentempcode("int");
-                    string t_size = gentempcode("int");
+                    string t_new = gentempcode("string");
                     string cod = $3.traducao;
-                    cod += "\t" + t_len1 + " = contar_chars(" + var.temp + ");\n";
-                    cod += "\t" + t_len2 + " = contar_chars(" + $3.label + ");\n";
-                    cod += "\t" + t_sum  + " = " + t_len1 + " + " + t_len2 + ";\n";
-                    cod += "\t" + t_size + " = " + t_sum  + " + 1;\n";
-                    cod += "\t" + t_new  + " = malloc(" + t_size + ");\n";
+                    cod += "\t" + t_new + " = malloc(contar_chars(" + var.temp + ") + contar_chars(" + $3.label + ") + 1);\n";
                     cod += "\tstrcpy(" + t_new + ", " + var.temp + ");\n";
                     cod += "\tstrcat(" + t_new + ", " + $3.label + ");\n";
                     if($3.kind == "temp") cod += "\tfree(" + $3.label + ");\n";
@@ -814,15 +770,21 @@ ATRIB_FOR   : TK_ID '=' E
                 $$.traducao = $3.traducao + "\t" + var.temp + " %= " + $3.label + ";\n";
             }
             ;
-OPT_ATRIB_FOR : ATRIB_FOR 
-              { 
-                  $$.traducao = $1.traducao; 
+OPT_ATRIB_FOR : ATRIB_FOR
+              {
+                  $$.traducao = $1.traducao;
               }
               |
-              { 
-                  $$.traducao = ""; 
+              {
+                  $$.traducao = "";
               }
               ;
+
+/* For init */
+FOR_INIT    : ATRIB_FOR     { $$.traducao = $1.traducao; }
+            | DECL           { $$.traducao = $1.traducao; }
+            |                { $$.traducao = ""; }
+            ;
 
 OPT_E         : E 
               { 
@@ -849,7 +811,7 @@ LISTA_CASES: CASO_NORMAL LISTA_CASES
             ;
 CASO_NORMAL:CASE E ':' COMANDOS
               {
-                  // Resgata quem e o switch alvo
+                  // Resgata quem eh o switch alvo
                 string var_label = switch_expr_stack.back();
                 string var_tipo = switch_tipo_stack.back();
                 string l_fim = stack_fim.back();
@@ -877,13 +839,96 @@ CASO_NORMAL:CASE E ':' COMANDOS
 
 DECL        : TIPO TK_ID
             {
-                if(declarada_no_escopo_atual($2.label)) {
+                if(declarada_no_escopo_atual($2.label))
                     yyerror("Variavel ja declarada neste escopo");
-                }
-
                 inserir_simbolo($2.label, $1.tipo, "");
-
                 $$.traducao = "";
+            }
+            | TIPO TK_ID '=' E
+            {
+                if(declarada_no_escopo_atual($2.label))
+                    yyerror("Variavel ja declarada neste escopo");
+                string tipo_id = $1.tipo;
+                string temp_id = gentempcode(tipo_id);
+                inserir_simbolo($2.label, tipo_id, temp_id);
+                if(tipo_id == "string") {
+                    if ($4.tipo != "string") yyerror("Tipos incompativeis: esperado uma string.");
+                    $$.traducao = atribuir_string(temp_id, $4);
+                } else {
+                    string conversoes = "";
+                    string label_final = converter($4.tipo, tipo_id, $4.label, conversoes);
+                    if (label_final == "ERRO_TIPO") yyerror("Tipos incompativeis: nao e possivel converter para bool.");
+                    $$.traducao = $4.traducao + conversoes + "\t" + temp_id + " = " + label_final + ";\n";
+                }
+            }
+            | TIPO TK_ID DIMS
+            {
+                if (declarada_no_escopo_atual($2.label))
+                    yyerror("Variavel ja declarada neste escopo: " + $2.label);
+                if ($1.tipo == "string")
+                    yyerror("Arrays de string nao sao suportados.");
+                int total = 1;
+                for (int d : $3.dims) total *= d;
+                string arr_temp = gentemparray($1.tipo, total);
+                inserir_simbolo_array($2.label, $1.tipo, arr_temp, $3.dims);
+                $$.traducao = "";
+            }
+            | TIPO TK_ID DIMS '=' '{' INIT_OUTER '}'
+            {
+                if (declarada_no_escopo_atual($2.label))
+                    yyerror("Variavel ja declarada neste escopo: " + $2.label);
+                if ($1.tipo == "string")
+                    yyerror("Arrays de string nao sao suportados.");
+
+                int total = 1;
+                for (int d : $3.dims) total *= d;
+
+                string arr_temp = gentemparray($1.tipo, total);
+                inserir_simbolo_array($2.label, $1.tipo, arr_temp, $3.dims);
+
+                string cod  = "";
+                string zero = ($1.tipo == "float") ? "0.0" : "0";
+
+                if ($6.kind == "flat") {
+                    int idx = 0;
+                    for (auto &elem : g_init_matrix[0]) {
+                        if (idx >= total) yyerror("Inicializador tem mais elementos que o array.");
+                        string conv = "";
+                        string lf = converter(elem.tipo, $1.tipo, elem.label, conv);
+                        if (lf == "ERRO_TIPO") yyerror("Tipo incompativel no inicializador do array.");
+                        cod += elem.code + conv +
+                               "\t" + arr_temp + "[" + to_string(idx++) + "] = " + lf + ";\n";
+                    }
+                    for (; idx < total; idx++)
+                        cod += "\t" + arr_temp + "[" + to_string(idx) + "] = " + zero + ";\n";
+                } else {
+                    if ($3.dims.size() < 2)
+                        yyerror("Inicializacao aninhada requer array multidimensional.");
+                    int ncols = $3.dims.back();
+                    int nrows = total / ncols;
+                    int ri = 0;
+                    for (auto &row : g_init_matrix) {
+                        if (ri >= nrows) yyerror("Inicializador tem mais linhas que o array.");
+                        int base = ri * ncols, ci = 0;
+                        for (auto &elem : row) {
+                            if (ci >= ncols) yyerror("Linha " + to_string(ri) + " do inicializador tem mais elementos que colunas.");
+                            string conv = "";
+                            string lf = converter(elem.tipo, $1.tipo, elem.label, conv);
+                            if (lf == "ERRO_TIPO") yyerror("Tipo incompativel no inicializador do array.");
+                            cod += elem.code + conv +
+                                   "\t" + arr_temp + "[" + to_string(base + ci++) + "] = " + lf + ";\n";
+                        }
+                        for (; ci < ncols; ci++)
+                            cod += "\t" + arr_temp + "[" + to_string(ri * ncols + ci) + "] = " + zero + ";\n";
+                        ri++;
+                    }
+                    for (; ri < nrows; ri++) {
+                        int base = ri * ncols;
+                        for (int ci = 0; ci < ncols; ci++)
+                            cod += "\t" + arr_temp + "[" + to_string(base + ci) + "] = " + zero + ";\n";
+                    }
+                }
+                $$.traducao = cod;
             }
             ;
 
@@ -893,26 +938,116 @@ TIPO        : INT {$$.tipo = "int";}
             | BOOL_TYPE {$$.tipo = "bool";}
             | STRING {$$.tipo = "string";}
             ;
-                        /* Aritmetico e String Concat */
+/* Dimensoes */
+DIMS        : '[' TK_NUM ']'
+            { $$.dims = { stoi($2.label) }; $$.traducao = ""; }
+            | DIMS '[' TK_NUM ']'
+            { $$.dims = $1.dims; $$.dims.push_back(stoi($3.label)); $$.traducao = ""; }
+            ;
+/* Elist */
+ELIST       : TK_ID '[' E
+            {
+                if (!declarada($1.label))
+                    yyerror("Variavel nao declarada: " + $1.label);
+                Simbolo arr = obter_simbolo($1.label);
+                if (arr.dims.empty())
+                    yyerror("'" + $1.label + "' nao e um array.");
+                $$.arr_id   = $1.label;
+                $$.arr_temp = arr.temp;
+                $$.ndim     = 1;
+                $$.tipo     = arr.tipo;
+                $$.label    = $3.label;
+                $$.traducao = $3.traducao;
+            }
+            | ELIST ']' '[' E
+            {
+                int m = $1.ndim + 1;
+                Simbolo arr = obter_simbolo($1.arr_id);
+                if (m > (int)arr.dims.size())
+                    yyerror("Indices em excesso para o array '" + $1.arr_id + "'.");
+                int lim = arr.dims[m - 1];
+                string t_mul = gentempcode("int");
+                string t_add = gentempcode("int");
+                $$.arr_id   = $1.arr_id;
+                $$.arr_temp = $1.arr_temp;
+                $$.ndim     = m;
+                $$.tipo     = $1.tipo;
+                $$.label    = t_add;
+                $$.traducao = $1.traducao + $4.traducao +
+                              "\t" + t_mul + " = " + $1.label + " * " + to_string(lim) + ";\n" +
+                              "\t" + t_add + " = " + t_mul + " + " + $4.label + ";\n";
+            }
+            ;
+
+LARRAY      : ELIST ']'
+            {
+                Simbolo arr = obter_simbolo($1.arr_id);
+                if ($1.ndim != (int)arr.dims.size())
+                    yyerror("Numero incorreto de indices para '" + $1.arr_id +
+                            "': esperado " + to_string(arr.dims.size()) +
+                            ", recebido "  + to_string($1.ndim) + ".");
+                $$.arr_id   = $1.arr_id;
+                $$.arr_temp = $1.arr_temp;
+                $$.label    = $1.label;
+                $$.tipo     = $1.tipo;
+                $$.traducao = $1.traducao;
+                $$.kind     = "array_lval";
+            }
+            ;
+
+/* Inicializadores de array */
+
+FLAT_LIST   : E
+            {
+                g_init_matrix.clear();
+                g_init_matrix.push_back({});
+                g_init_matrix.back().push_back({$1.label, $1.traducao, $1.tipo});
+                $$.label = "1";
+            }
+            | FLAT_LIST ',' E
+            {
+                g_init_matrix.back().push_back({$3.label, $3.traducao, $3.tipo});
+                $$.label = to_string(stoi($1.label) + 1);
+            }
+            ;
+
+ROW_LIST    : E
+            {
+                g_init_matrix.back().push_back({$1.label, $1.traducao, $1.tipo});
+                $$.label = "1";
+            }
+            | ROW_LIST ',' E
+            {
+                g_init_matrix.back().push_back({$3.label, $3.traducao, $3.tipo});
+                $$.label = to_string(stoi($1.label) + 1);
+            }
+            ;
+
+INIT_NESTED_START : { g_init_matrix.clear(); } ;
+NEW_ROW           :{ g_init_matrix.push_back({}); } ;
+
+NESTED_LIST : INIT_NESTED_START '{' NEW_ROW ROW_LIST '}'
+            { $$.label = "1"; $$.kind = "nested"; }
+            | NESTED_LIST ',' '{' NEW_ROW ROW_LIST '}'
+            { $$.label = to_string(stoi($1.label) + 1); $$.kind = "nested"; }
+            ;
+
+INIT_OUTER  : FLAT_LIST   { $$.kind = "flat";   $$.label = $1.label; }
+            | NESTED_LIST  { $$.kind = "nested"; $$.label = $1.label; }
+            ;
 E           : E '+' E    
             {
                 if($1.tipo == "string" && $3.tipo == "string"){
                     $$.tipo = "string";
-                    $$.kind = "temp"; // resultado e' um buffer novo, ninguem mais e' dono dele ainda
+                    $$.kind = "temp"; // resultado eh um buffer novo, ninguem mais eh dono dele ainda
                     $$.label = gentempcode("string");
 
                     string cod = $1.traducao + $3.traducao;
 
-                    // TAC (Dragon Book): cada operacao e uma instrucao separada.
-                    string t_len1 = gentempcode("int");
-                    string t_len2 = gentempcode("int");
-                    string t_sum  = gentempcode("int");
-                    string t_size = gentempcode("int");
-                    cod += "\t" + t_len1 + " = contar_chars(" + $1.label + ");\n";
-                    cod += "\t" + t_len2 + " = contar_chars(" + $3.label + ");\n";
-                    cod += "\t" + t_sum  + " = " + t_len1 + " + " + t_len2 + ";\n";
-                    cod += "\t" + t_size + " = " + t_sum  + " + 1;\n";
-                    cod += "\t" + $$.label + " = malloc(" + t_size + ");\n";
+                    // Um malloc do tamanho exato (sem strlen: usa contar_chars) +
+                    // um strcpy + um strcat. Sem buffers desperdicados.
+                    cod += "\t" + $$.label + " = malloc(contar_chars(" + $1.label +
+                           ") + contar_chars(" + $3.label + ") + 1);\n";
                     cod += "\tstrcpy(" + $$.label + ", " + $1.label + ");\n";
                     cod += "\tstrcat(" + $$.label + ", " + $3.label + ");\n";
 
@@ -1032,7 +1167,7 @@ E           : E '+' E
                 $$.tipo  = $2.tipo;
                 $$.label = temp_cast;
                 
-                // Impede que o C receba um cast (bool)
+                // Impede que o C receba um bool
                 string tipo_c = ($2.tipo == "bool") ? "int" : $2.tipo;
                 
                 $$.traducao = $4.traducao +
@@ -1082,7 +1217,7 @@ E           : E '+' E
             | TK_STRING
             {
                 $$.tipo = "string";
-                $$.kind = "lit"; // literal estatico -- nunca e' dono de memoria heap
+                $$.kind = "lit"; // literal estatico
                 $$.label = $1.label;
                 $$.traducao = "";
             }
@@ -1165,6 +1300,15 @@ E           : E '+' E
                 $$.traducao = "\t" + t_old + " = " + var.temp + ";\n"
                             + "\t" + var.temp + " = " + var.temp + " - 1;\n";
             }
+            | LARRAY
+            {
+                string t = gentempcode($1.tipo);
+                $$.tipo     = $1.tipo;
+                $$.label    = t;
+                $$.kind     = "";
+                $$.traducao = $1.traducao +
+                              "\t" + t + " = " + $1.arr_temp + "[" + $1.label + "];\n";
+            }
             ;
 
 %%
@@ -1177,18 +1321,15 @@ string declaraTemp(){
     string s;
 
     for (auto &t : temporarios) {
-        if(t.second == "string"){
-            // char* dinamico, sempre comeca em NULL -> nunca ha free em
-            // ponteiro nao inicializado, e o guard "if(x) free(x);" em
-            // qualquer atribuicao posterior cobre tanto a 1a atribuicao
-            // quanto reatribuicoes.
-            s += "\tchar* " + t.first + " = NULL;\n";
-        }
-        else if(t.second == "bool"){
-            s += "\tint " + t.first + ";\n";
-        }
-        else{
-            s += "\t" + t.second + " " + t.first + ";\n";
+        if (t.array_size > 0) {
+            string ctype = (t.tipo == "bool") ? "int" : t.tipo;
+            s += "\t" + ctype + " " + t.nome + "[" + to_string(t.array_size) + "] = {0};\n";
+        } else if(t.tipo == "string"){
+            s += "\tchar* " + t.nome + " = NULL;\n";
+        } else if(t.tipo == "bool"){
+            s += "\tint " + t.nome + ";\n";
+        } else {
+            s += "\t" + t.tipo + " " + t.nome + ";\n";
         }
     }
 
@@ -1199,7 +1340,15 @@ string gentempcode(string tipo)
 {
     var_temp_qnt++;
     string nome = "t" + to_string(var_temp_qnt);
-    temporarios.push_back({nome, tipo});
+    temporarios.push_back({nome, tipo, 0});
+    return nome;
+}
+
+string gentemparray(string tipo, int size)
+{
+    var_temp_qnt++;
+    string nome = "t" + to_string(var_temp_qnt);
+    temporarios.push_back({nome, tipo, size});
     return nome;
 }
 

@@ -78,6 +78,8 @@ FLOAT      {DIGITO}+\.{DIGITO}*([eE][+-]?{DIGITO}+)?
 "}"         { return '}'; }
 ";"         { return ';'; }
 ","         { return ','; }
+"["         { return '['; }
+"]"         { return ']'; }
 
 {FLOAT}     { yylval.label = yytext; return TK_FLOAT; }
 {NUM}       { yylval.label = yytext; return TK_NUM; }

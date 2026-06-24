@@ -28,3 +28,6 @@ switch (opcao){
 String dinamica e consertada
 break; e continue;
 Operadores Unarios e Compostos;
+
+matrizes com zero fill
+inicializar variaveis dentro do FOR,

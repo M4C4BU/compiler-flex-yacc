@@ -1,3 +1,0 @@
-float F;
-int I;
-F = I + 2.5;

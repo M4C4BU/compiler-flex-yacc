@@ -1,2 +1,3 @@
-string c = "salve";
-c--;
+for(int i = 0;i<2;i++){
+    println("super teste");
+}
